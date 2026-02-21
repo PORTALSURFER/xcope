@@ -20,6 +20,26 @@ use crate::XcopeShared;
 const PROCESSOR_CID: TUID = uid(0x9AF47871, 0x00A645F3, 0x9D8A34AA, 0x7D4E7821);
 const CONTROLLER_CID: TUID = uid(0x0B49357D, 0xF45A4D2D, 0xA67A66AE, 0xD7C24B7A);
 
+#[cfg(target_os = "windows")]
+const fn vst3_bus_flag(flag: i32) -> u32 {
+    flag as u32
+}
+
+#[cfg(not(target_os = "windows"))]
+const fn vst3_bus_flag(flag: u32) -> u32 {
+    flag
+}
+
+#[cfg(target_os = "windows")]
+const fn vst3_process_state_flag(flag: i32) -> u32 {
+    flag as u32
+}
+
+#[cfg(not(target_os = "windows"))]
+const fn vst3_process_state_flag(flag: u32) -> u32 {
+    flag
+}
+
 #[derive(Copy, Clone)]
 enum SharedRole {
     Processor,
@@ -165,7 +185,7 @@ impl IComponentTrait for XcopeVst3Processor {
             &mut bus.name,
         );
         bus.busType = BusTypes_::kMain as BusType;
-        bus.flags = BusInfo_::BusFlags_::kDefaultActive;
+        bus.flags = vst3_bus_flag(BusInfo_::BusFlags_::kDefaultActive);
         kResultOk
     }
 
@@ -593,18 +613,28 @@ fn transport_from_context(process_context: *mut ProcessContext) -> TransportSnap
         return TransportSnapshot::default();
     };
     let flags = ctx.state;
-    let tempo_valid = (flags & ProcessContext_::StatesAndFlags_::kTempoValid) != 0;
-    let pos_valid = (flags & ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid) != 0;
+    let tempo_valid =
+        (flags & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kTempoValid)) != 0;
+    let pos_valid = (flags
+        & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid))
+        != 0;
     TransportSnapshot {
         tempo_bpm: if tempo_valid { ctx.tempo as f32 } else { 120.0 },
-        is_playing: (flags & ProcessContext_::StatesAndFlags_::kPlaying) != 0,
+        is_playing: (flags & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kPlaying))
+            != 0,
         song_pos_beats: pos_valid.then_some(ctx.projectTimeMusic),
-        time_sig_num: if (flags & ProcessContext_::StatesAndFlags_::kTimeSigValid) != 0 {
+        time_sig_num: if (flags
+            & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kTimeSigValid))
+            != 0
+        {
             ctx.timeSigNumerator as u16
         } else {
             4
         },
-        time_sig_denom: if (flags & ProcessContext_::StatesAndFlags_::kTimeSigValid) != 0 {
+        time_sig_denom: if (flags
+            & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kTimeSigValid))
+            != 0
+        {
             ctx.timeSigDenominator as u16
         } else {
             4
