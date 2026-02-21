@@ -4,7 +4,7 @@ use toybox::gui::declarative::SurfaceCommand;
 use toybox::gui::{Color, Point, Rect};
 
 use crate::params::{DisplayMode, XcopeUiState};
-use crate::scope::ScopeFrame;
+use crate::scope::{decimate_frame_channel, ScopeFrame};
 use crate::transport::{resolve_tempo_locked_window, subdivisions_for_grid, TransportSnapshot};
 
 /// Build region draw commands for one scope frame.
@@ -126,10 +126,82 @@ fn draw_waveform_channel(
     zoom_y: f32,
     color: Color,
 ) {
+    if frame.sample_count() > width.max(2) as usize {
+        draw_dense_waveform_channel(
+            commands,
+            frame,
+            channel,
+            width,
+            lane_top,
+            lane_bottom,
+            zoom_y,
+            color,
+        );
+        return;
+    }
+    draw_sparse_waveform_channel(
+        commands,
+        frame,
+        channel,
+        width,
+        lane_top,
+        lane_bottom,
+        zoom_y,
+        color,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_dense_waveform_channel(
+    commands: &mut Vec<SurfaceCommand>,
+    frame: &ScopeFrame,
+    channel: usize,
+    width: i32,
+    lane_top: i32,
+    lane_bottom: i32,
+    zoom_y: f32,
+    color: Color,
+) {
     let lane_height = (lane_bottom - lane_top).max(1);
     let center_y = lane_top + lane_height / 2;
     let scale_y = (lane_height as f32 * 0.45) / zoom_y.max(0.05);
+    let columns = width.max(2) as usize;
+    let envelopes = decimate_frame_channel(frame, channel, columns);
+    if envelopes.is_empty() {
+        return;
+    }
+    for (column_index, envelope) in envelopes.iter().enumerate() {
+        let x = ((column_index as f32 / (columns - 1) as f32) * width as f32).round() as i32;
+        let y_min = sample_to_lane_y(envelope.min, center_y, scale_y, lane_top, lane_bottom);
+        let y_max = sample_to_lane_y(envelope.max, center_y, scale_y, lane_top, lane_bottom);
+        commands.push(SurfaceCommand::Line {
+            start: Point {
+                x: x.clamp(0, width),
+                y: y_min.min(y_max),
+            },
+            end: Point {
+                x: x.clamp(0, width),
+                y: y_min.max(y_max),
+            },
+            color,
+        });
+    }
+}
 
+#[allow(clippy::too_many_arguments)]
+fn draw_sparse_waveform_channel(
+    commands: &mut Vec<SurfaceCommand>,
+    frame: &ScopeFrame,
+    channel: usize,
+    width: i32,
+    lane_top: i32,
+    lane_bottom: i32,
+    zoom_y: f32,
+    color: Color,
+) {
+    let lane_height = (lane_bottom - lane_top).max(1);
+    let center_y = lane_top + lane_height / 2;
+    let scale_y = (lane_height as f32 * 0.45) / zoom_y.max(0.05);
     let sample_count = frame.sample_count();
     let points = width.max(2) as usize;
     let step = (sample_count as f32 / points as f32).max(1.0);
@@ -139,10 +211,10 @@ fn draw_waveform_channel(
         let sample_index = ((point_index as f32 * step) as usize).min(sample_count - 1);
         let sample = frame.sample(channel, sample_index).clamp(-1.2, 1.2);
         let x = ((point_index as f32 / (points - 1) as f32) * width as f32).round() as i32;
-        let y = (center_y as f32 - sample * scale_y).round() as i32;
+        let y = sample_to_lane_y(sample, center_y, scale_y, lane_top, lane_bottom);
         let current = Point {
             x: x.clamp(0, width),
-            y: y.clamp(lane_top, lane_bottom),
+            y,
         };
         if let Some(previous) = prev {
             commands.push(SurfaceCommand::Line {
@@ -153,6 +225,17 @@ fn draw_waveform_channel(
         }
         prev = Some(current);
     }
+}
+
+fn sample_to_lane_y(
+    sample: f32,
+    center_y: i32,
+    scale_y: f32,
+    lane_top: i32,
+    lane_bottom: i32,
+) -> i32 {
+    ((center_y as f32 - sample.clamp(-1.2, 1.2) * scale_y).round() as i32)
+        .clamp(lane_top, lane_bottom)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -312,5 +395,61 @@ mod tests {
             320,
         );
         assert_ne!(at_bar, quarter_beat_later);
+    }
+
+    #[test]
+    fn dense_waveform_path_emits_vertical_column_segments() {
+        let mut commands = Vec::new();
+        let mut samples = vec![[0.0; crate::constants::MAX_VISUAL_CHANNELS]; 512];
+        samples[255][0] = 1.0;
+        let frame = ScopeFrame {
+            channel_count: 1,
+            samples,
+        };
+        draw_waveform_channel(
+            &mut commands,
+            &frame,
+            0,
+            64,
+            120,
+            0,
+            120,
+            1.0,
+            Color::rgb(255, 255, 255),
+        );
+        let vertical_count = commands
+            .iter()
+            .filter(|command| matches!(command, SurfaceCommand::Line { start, end, .. } if start.x == end.x))
+            .count();
+        assert!(vertical_count >= 50);
+    }
+
+    #[test]
+    fn sparse_waveform_path_keeps_polyline_behavior() {
+        let mut commands = Vec::new();
+        let mut samples = vec![[0.0; crate::constants::MAX_VISUAL_CHANNELS]; 16];
+        for (index, sample) in samples.iter_mut().enumerate() {
+            sample[0] = ((index as f32 / 15.0) * 2.0) - 1.0;
+        }
+        let frame = ScopeFrame {
+            channel_count: 1,
+            samples,
+        };
+        draw_waveform_channel(
+            &mut commands,
+            &frame,
+            0,
+            64,
+            120,
+            0,
+            120,
+            1.0,
+            Color::rgb(255, 255, 255),
+        );
+        let vertical_count = commands
+            .iter()
+            .filter(|command| matches!(command, SurfaceCommand::Line { start, end, .. } if start.x == end.x))
+            .count();
+        assert!(vertical_count < 10);
     }
 }
