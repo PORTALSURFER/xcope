@@ -5,8 +5,8 @@ use toybox::gui::declarative::UiAction;
 use crate::params::{DisplayMode, GridSubdivision, ScopeMode, TimeWindow, XcopeParams};
 
 use super::layout::{
-    CHANNEL_VISIBLE_KEYS, DISPLAY_KEY, FREEZE_KEY, GRID_SUBDIV_KEY, GRID_TRIPLET_KEY, MODE_KEY,
-    RESET_ZOOM_KEY, WINDOW_KEY, ZOOM_X_KEY, ZOOM_Y_KEY,
+    CHANNEL_COLOR_KEYS, CHANNEL_VISIBLE_KEYS, DISPLAY_KEY, FREEZE_KEY, GRID_SUBDIV_KEY,
+    GRID_TRIPLET_KEY, MODE_KEY, RESET_ZOOM_KEY, WINDOW_KEY, ZOOM_X_KEY, ZOOM_Y_KEY,
 };
 
 /// Apply one declarative UI action to shared parameters.
@@ -36,7 +36,13 @@ pub fn apply_ui_action(params: &XcopeParams, action: UiAction) -> bool {
                 2 => GridSubdivision::Div32,
                 _ => GridSubdivision::Div16,
             }),
-            _ => {}
+            _ => {
+                for (channel_index, channel_color_key) in CHANNEL_COLOR_KEYS.iter().enumerate() {
+                    if key == *channel_color_key {
+                        params.set_channel_color(channel_index, index as u32);
+                    }
+                }
+            }
         },
         UiAction::ToggleChanged { key, value } => match key.as_str() {
             FREEZE_KEY => params.set_freeze(value),
@@ -110,5 +116,18 @@ mod tests {
         let snapshot = params.snapshot();
         assert_eq!(snapshot.zoom_x, crate::constants::ZOOM_X_DEFAULT);
         assert_eq!(snapshot.zoom_y, crate::constants::ZOOM_Y_DEFAULT);
+    }
+
+    #[test]
+    fn reducer_updates_channel_color_from_dropdown_action() {
+        let params = XcopeParams::new();
+        let _ = apply_ui_action(
+            &params,
+            UiAction::DropdownSelected {
+                key: CHANNEL_COLOR_KEYS[2].to_string(),
+                index: 5,
+            },
+        );
+        assert_eq!(params.snapshot().channel_color[2], 5);
     }
 }
