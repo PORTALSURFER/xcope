@@ -174,6 +174,17 @@ fn select_artifact_for_invocation(config: &BuildConfig) -> ArtifactKind {
         };
     }
 
+    // Cargo sets `CARGO_FEATURE_<NAME>` for enabled package features. Use this
+    // to keep artifact routing aligned with explicit `--features vst3` builds.
+    if env::var_os("CARGO_FEATURE_VST3").is_some() {
+        if !config.vst3 {
+            println!(
+                "cargo:warning=`vst3` feature is enabled but toybox.toml disables vst3 artifacts; forcing VST3 output for this invocation."
+            );
+        }
+        return ArtifactKind::Vst3;
+    }
+
     match (config.clap, config.vst3) {
         (true, false) => ArtifactKind::Clap,
         (false, true) => ArtifactKind::Vst3,
