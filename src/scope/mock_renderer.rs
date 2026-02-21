@@ -254,16 +254,15 @@ fn vertical_grid_lines(
         let subdivisions =
             subdivisions_for_grid(ui_state.grid_subdivision, ui_state.grid_triplet).max(1) as f64;
         let step_beats = 1.0 / subdivisions;
-        let first_step = (window.start_beat / step_beats).floor() as i64 - 1;
-        let last_step = (window.end_beat / step_beats).ceil() as i64 + 1;
+        let last_step = (window.beats_visible / step_beats).ceil() as i64 + 1;
         let beats_per_bar = beats_per_bar(transport.time_sig_num, transport.time_sig_denom) as f64;
         let mut lines = Vec::new();
-        for step in first_step..=last_step {
+        for step in 0..=last_step {
             let beat = step as f64 * step_beats;
-            if beat < window.start_beat || beat > window.end_beat {
+            if beat < 0.0 || beat > window.beats_visible {
                 continue;
             }
-            let x_norm = ((beat - window.start_beat) / window.beats_visible).clamp(0.0, 1.0);
+            let x_norm = (beat / window.beats_visible).clamp(0.0, 1.0);
             let x = (x_norm * width as f64).round() as i32;
             let tone = if is_multiple(beat, beats_per_bar, 1.0e-6) {
                 GridTone::Bar
@@ -371,7 +370,7 @@ mod tests {
     }
 
     #[test]
-    fn tempo_locked_grid_positions_shift_with_song_position_phase() {
+    fn tempo_locked_grid_positions_stay_stable_across_song_position_phase() {
         let state = XcopeUiState {
             mode: crate::params::ScopeMode::TempoLocked,
             grid_subdivision: GridSubdivision::Div8,
@@ -394,7 +393,7 @@ mod tests {
             },
             320,
         );
-        assert_ne!(at_bar, quarter_beat_later);
+        assert_eq!(at_bar, quarter_beat_later);
     }
 
     #[test]

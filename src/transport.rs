@@ -202,7 +202,7 @@ fn beats_visible(window: TimeWindow, transport: TransportSnapshot) -> f32 {
 fn beats_to_samples(beats: f32, tempo_bpm: f32, sample_rate_hz: f32) -> usize {
     let tempo = sanitize_tempo(tempo_bpm);
     let seconds = (beats.max(0.0) / tempo) * 60.0;
-    (seconds * sample_rate_hz.max(1.0)) as usize
+    (seconds * sample_rate_hz.max(1.0)).round() as usize
 }
 
 fn beats_per_bar(num: u16, denom: u16) -> f32 {
