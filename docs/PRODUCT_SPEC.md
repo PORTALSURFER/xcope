@@ -24,7 +24,7 @@ The product is intended for producers, mixing engineers, and sound designers wor
 - Windows (64-bit) support only
 - VST3 format only
 - Real-time waveform display
-- Multi-channel visualization (1–4 channels)
+- Multi-channel visualization (1–2 channels)
 - Tempo synchronization
 - Musical grid overlay
 - Overlay and split display modes
@@ -81,7 +81,7 @@ Requirements:
 
 - Accurate amplitude rendering.
 - Stable and smooth display.
-- Support for at least 1–4 channels.
+- Support for at least 1–2 channels.
 - Correct rendering at 44.1kHz, 48kHz, and 96kHz.
 - No distortion of waveform shape due to rendering artifacts.
 
@@ -131,13 +131,13 @@ Grid behavior requirements:
 
 ### 4.4 Multi-Channel Support
 
-The plugin must accept up to 4 channels of input.
+The plugin must accept up to 2 channels of input.
 
 Input Representation (V1):
 
-- The scope displays four independent mono lanes (`CH1`..`CH4`).
-- `CH1` maps to the hosting track input (main input bus).
-- `CH2`..`CH4` map to additional routable input sources (aux input buses) from other tracks when supported by the host.
+- The scope displays two independent mono lanes (`CH1`, `CH2`).
+- `CH1` maps to the hosting track input (main input bus, left channel).
+- `CH2` maps to one routable sidechain source (aux input bus, left channel).
 - Each displayed lane is treated as one mono source.
 - For now, when a routed source is stereo, the plugin uses the source's left (`L`) channel for display.
 - Right-channel or stereo summing source selection is deferred to a later version.
@@ -157,9 +157,9 @@ Channel Controls:
 - Per-channel color selection (at least basic palette).
 - Optional per-channel amplitude scaling.
 
-If more than 4 channels are present:
+If more than 2 channels are present:
 
-- Only first 4 must be visualized.
+- Only first 2 must be visualized.
 - No crash or undefined behavior.
 
 ---
@@ -345,7 +345,7 @@ Xcope is considered complete when:
 
 1. It runs reliably in major Windows DAWs (e.g., Ableton Live, Bitwig, Reaper).
 2. Tempo-locked mode remains visually stable.
-3. Multi-channel overlay and split modes work correctly for four mono display lanes.
+3. Multi-channel overlay and split modes work correctly for two mono display lanes.
 4. UI scales without layout defects.
 5. CPU usage remains low.
 6. No audio artifacts are introduced.

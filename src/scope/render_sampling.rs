@@ -108,12 +108,7 @@ mod tests {
     fn frame_channel_decimation_uses_requested_channel() {
         let frame = ScopeFrame {
             channel_count: 2,
-            samples: vec![
-                [0.1, -0.9, 0.0, 0.0],
-                [0.2, 0.5, 0.0, 0.0],
-                [0.3, 0.8, 0.0, 0.0],
-                [0.4, -0.1, 0.0, 0.0],
-            ],
+            samples: vec![[0.1, -0.9], [0.2, 0.5], [0.3, 0.8], [0.4, -0.1]],
         };
         let left = decimate_frame_channel(&frame, 0, 2);
         let right = decimate_frame_channel(&frame, 1, 2);

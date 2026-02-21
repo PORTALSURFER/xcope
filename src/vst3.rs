@@ -312,14 +312,9 @@ impl IComponentTrait for XcopeVst3Processor {
         bus.direction = dir;
         match dir as BusDirections {
             BusDirections_::kInput if index < INPUT_SOURCE_BUS_COUNT => {
-                let label = if index == 0 {
-                    "Input 1"
-                } else {
-                    match index {
-                        1 => "Input 2",
-                        2 => "Input 3",
-                        _ => "Input 4",
-                    }
+                let label = match index {
+                    0 => "Main Input",
+                    _ => "Sidechain Input",
                 };
                 bus.channelCount = self.bus_configuration.input_layout(index).channel_count();
                 copy_wstring(label, &mut bus.name);
@@ -885,12 +880,8 @@ fn param_title(param_id: u32) -> &'static str {
         Some(ParamId::ZoomY) => "Zoom Y",
         Some(ParamId::Channel1Visible) => "Ch1",
         Some(ParamId::Channel2Visible) => "Ch2",
-        Some(ParamId::Channel3Visible) => "Ch3",
-        Some(ParamId::Channel4Visible) => "Ch4",
         Some(ParamId::Channel1Color) => "Ch1 Color",
         Some(ParamId::Channel2Color) => "Ch2 Color",
-        Some(ParamId::Channel3Color) => "Ch3 Color",
-        Some(ParamId::Channel4Color) => "Ch4 Color",
         None => "Unknown",
     }
 }
@@ -910,18 +901,11 @@ fn param_steps(param_id: u32) -> i32 {
             | ParamId::GridTriplet
             | ParamId::Freeze
             | ParamId::Channel1Visible
-            | ParamId::Channel2Visible
-            | ParamId::Channel3Visible
-            | ParamId::Channel4Visible,
+            | ParamId::Channel2Visible,
         ) => 1,
         Some(ParamId::TimeWindow) => 3,
         Some(ParamId::GridSubdivision) => 2,
-        Some(
-            ParamId::Channel1Color
-            | ParamId::Channel2Color
-            | ParamId::Channel3Color
-            | ParamId::Channel4Color,
-        ) => 7,
+        Some(ParamId::Channel1Color | ParamId::Channel2Color) => 7,
         _ => 0,
     }
 }

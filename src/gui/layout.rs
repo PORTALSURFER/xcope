@@ -35,10 +35,9 @@ pub const ZOOM_Y_KEY: &str = "zoom-y";
 pub const RESET_ZOOM_KEY: &str = "reset-zoom";
 
 /// Channel visibility toggle keys.
-pub const CHANNEL_VISIBLE_KEYS: [&str; 4] =
-    ["ch1-visible", "ch2-visible", "ch3-visible", "ch4-visible"];
+pub const CHANNEL_VISIBLE_KEYS: [&str; 2] = ["ch1-visible", "ch2-visible"];
 /// Channel color-dropdown keys.
-pub const CHANNEL_COLOR_KEYS: [&str; 4] = ["ch1-color", "ch2-color", "ch3-color", "ch4-color"];
+pub const CHANNEL_COLOR_KEYS: [&str; 2] = ["ch1-color", "ch2-color"];
 
 /// Toolbar region fixed design-space height.
 pub const TOOLBAR_HEIGHT: u32 = 84;
@@ -98,11 +97,9 @@ fn bottom_row(snapshot: &XcopeUiState) -> Node {
     ]);
 
     let channels = row_slots(vec![
-        weighted_slot(toolbar_field("CH1", channel_control(0, snapshot)), 16),
-        weighted_slot(toolbar_field("CH2", channel_control(1, snapshot)), 16),
-        weighted_slot(toolbar_field("CH3", channel_control(2, snapshot)), 16),
-        weighted_slot(toolbar_field("CH4", channel_control(3, snapshot)), 16),
-        weighted_slot(toolbar_field("", reset_zoom_button()), 36),
+        weighted_slot(toolbar_field("CH1", channel_control(0, snapshot)), 22),
+        weighted_slot(toolbar_field("CH2", channel_control(1, snapshot)), 22),
+        weighted_slot(toolbar_field("", reset_zoom_button()), 56),
     ]);
 
     row_slots(vec![
@@ -278,7 +275,7 @@ mod tests {
         let window = window_dropdown(&state);
         let display = display_dropdown(&state);
         let grid = grid_dropdown(&state);
-        let ch3_color = channel_color_dropdown(2, &state);
+        let ch2_color = channel_color_dropdown(1, &state);
 
         let Node::Dropdown(mode) = mode else {
             panic!("mode should be dropdown")
@@ -292,7 +289,7 @@ mod tests {
         let Node::Dropdown(grid) = grid else {
             panic!("grid should be dropdown")
         };
-        let Node::Dropdown(ch3_color) = ch3_color else {
+        let Node::Dropdown(ch2_color) = ch2_color else {
             panic!("channel color should be dropdown")
         };
 
@@ -300,7 +297,7 @@ mod tests {
         assert_eq!(window.selected, 3);
         assert_eq!(display.selected, 1);
         assert_eq!(grid.selected, 2);
-        assert_eq!(ch3_color.selected, state.channel_color[2] as usize);
+        assert_eq!(ch2_color.selected, state.channel_color[1] as usize);
     }
 
     #[test]

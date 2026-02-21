@@ -245,8 +245,8 @@ mod tests {
             freeze: false,
             zoom_x: 1.0,
             zoom_y: 1.0,
-            channel_visible: [true, true, false, false],
-            channel_color: [0, 1, 2, 3],
+            channel_visible: [true, true],
+            channel_color: [0, 1],
         }
     }
 

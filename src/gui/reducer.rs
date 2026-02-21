@@ -124,10 +124,10 @@ mod tests {
         let _ = apply_ui_action(
             &params,
             UiAction::DropdownSelected {
-                key: CHANNEL_COLOR_KEYS[2].to_string(),
+                key: CHANNEL_COLOR_KEYS[1].to_string(),
                 index: 5,
             },
         );
-        assert_eq!(params.snapshot().channel_color[2], 5);
+        assert_eq!(params.snapshot().channel_color[1], 5);
     }
 }

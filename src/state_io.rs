@@ -1,10 +1,12 @@
 //! Versioned state payload helpers for Xcope.
 
+use crate::constants::MAX_VISUAL_CHANNELS;
 use crate::params::{
     clamp_color_index, clamp_zoom, DisplayMode, GridSubdivision, ScopeMode, TimeWindow,
     XcopeParams, XcopeUiState,
 };
 
+const PERSISTED_CHANNEL_SLOTS: usize = 4;
 const PAYLOAD_LEN_V1: usize = 1 + 1 + 1 + 1 + 1 + 1 + 4 + 4 + 4 + 4;
 
 /// Persisted V1 state payload.
@@ -27,9 +29,9 @@ pub struct XcopeStateV1 {
     /// Vertical zoom.
     pub zoom_y: f32,
     /// Per-channel visibility flags.
-    pub channel_visible: [bool; 4],
+    pub channel_visible: [bool; PERSISTED_CHANNEL_SLOTS],
     /// Per-channel color indices.
-    pub channel_color: [u32; 4],
+    pub channel_color: [u32; PERSISTED_CHANNEL_SLOTS],
 }
 
 impl Default for XcopeStateV1 {
@@ -41,6 +43,11 @@ impl Default for XcopeStateV1 {
 impl XcopeStateV1 {
     /// Create persisted state from one runtime UI snapshot.
     pub fn from_ui_state(state: &XcopeUiState) -> Self {
+        let mut channel_visible = [false; PERSISTED_CHANNEL_SLOTS];
+        let mut channel_color = [0u32; PERSISTED_CHANNEL_SLOTS];
+        let channel_count = MAX_VISUAL_CHANNELS.min(PERSISTED_CHANNEL_SLOTS);
+        channel_visible[..channel_count].copy_from_slice(&state.channel_visible[..channel_count]);
+        channel_color[..channel_count].copy_from_slice(&state.channel_color[..channel_count]);
         Self {
             mode: state.mode,
             time_window: state.time_window,
@@ -50,13 +57,20 @@ impl XcopeStateV1 {
             freeze: state.freeze,
             zoom_x: clamp_zoom(state.zoom_x),
             zoom_y: clamp_zoom(state.zoom_y),
-            channel_visible: state.channel_visible,
-            channel_color: state.channel_color.map(clamp_color_index),
+            channel_visible,
+            channel_color: channel_color.map(clamp_color_index),
         }
     }
 
     /// Convert persisted state to runtime UI snapshot.
     pub fn to_ui_state(&self) -> XcopeUiState {
+        let mut channel_visible = [false; MAX_VISUAL_CHANNELS];
+        let mut channel_color = [0u32; MAX_VISUAL_CHANNELS];
+        let channel_count = MAX_VISUAL_CHANNELS.min(PERSISTED_CHANNEL_SLOTS);
+        channel_visible[..channel_count].copy_from_slice(&self.channel_visible[..channel_count]);
+        for (index, color) in channel_color.iter_mut().enumerate().take(channel_count) {
+            *color = clamp_color_index(self.channel_color[index]);
+        }
         XcopeUiState {
             mode: self.mode,
             time_window: self.time_window,
@@ -66,8 +80,8 @@ impl XcopeStateV1 {
             freeze: self.freeze,
             zoom_x: clamp_zoom(self.zoom_x),
             zoom_y: clamp_zoom(self.zoom_y),
-            channel_visible: self.channel_visible,
-            channel_color: self.channel_color.map(clamp_color_index),
+            channel_visible,
+            channel_color,
         }
     }
 
@@ -167,7 +181,7 @@ mod tests {
             freeze: true,
             zoom_x: 1.75,
             zoom_y: 2.25,
-            channel_visible: [true, false, true, true],
+            channel_visible: [true, false, true, false],
             channel_color: [1, 3, 5, 7],
         };
 
@@ -208,6 +222,6 @@ mod tests {
         assert!(snapshot.freeze);
         assert_eq!(snapshot.zoom_x, 1.2);
         assert_eq!(snapshot.zoom_y, 2.4);
-        assert_eq!(snapshot.channel_visible, [true, true, true, false]);
+        assert_eq!(snapshot.channel_visible, [true, true]);
     }
 }

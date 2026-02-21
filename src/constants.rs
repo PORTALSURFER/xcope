@@ -16,7 +16,10 @@ pub const STATE_MAGIC: u32 = u32::from_le_bytes(*b"XCOP");
 pub const STATE_VERSION: u32 = 1;
 
 /// Maximum number of channels visualized at once.
-pub const MAX_VISUAL_CHANNELS: usize = 4;
+///
+/// Channel 1 captures the host track's left channel.
+/// Channel 2 captures the sidechain input's left channel.
+pub const MAX_VISUAL_CHANNELS: usize = 2;
 /// Number of color slots available for channel tint selection.
 pub const CHANNEL_COLOR_COUNT: u32 = 8;
 
@@ -61,18 +64,10 @@ pub enum ParamId {
     Channel1Visible = 9,
     /// Channel 2 visibility.
     Channel2Visible = 10,
-    /// Channel 3 visibility.
-    Channel3Visible = 11,
-    /// Channel 4 visibility.
-    Channel4Visible = 12,
     /// Channel 1 color palette index.
-    Channel1Color = 13,
+    Channel1Color = 11,
     /// Channel 2 color palette index.
-    Channel2Color = 14,
-    /// Channel 3 color palette index.
-    Channel3Color = 15,
-    /// Channel 4 color palette index.
-    Channel4Color = 16,
+    Channel2Color = 12,
 }
 
 impl ParamId {
@@ -94,12 +89,8 @@ impl ParamId {
             8 => Some(Self::ZoomY),
             9 => Some(Self::Channel1Visible),
             10 => Some(Self::Channel2Visible),
-            11 => Some(Self::Channel3Visible),
-            12 => Some(Self::Channel4Visible),
-            13 => Some(Self::Channel1Color),
-            14 => Some(Self::Channel2Color),
-            15 => Some(Self::Channel3Color),
-            16 => Some(Self::Channel4Color),
+            11 => Some(Self::Channel1Color),
+            12 => Some(Self::Channel2Color),
             _ => None,
         }
     }

@@ -164,8 +164,8 @@ impl Default for XcopeUiState {
             freeze: false,
             zoom_x: ZOOM_X_DEFAULT,
             zoom_y: ZOOM_Y_DEFAULT,
-            channel_visible: [true, true, false, false],
-            channel_color: [0, 1, 2, 3],
+            channel_visible: [true, true],
+            channel_color: [0, 1],
         }
     }
 }
@@ -333,7 +333,7 @@ pub fn clamp_color_index(color_index: u32) -> u32 {
 
 /// Return the number of exposed parameters.
 pub const fn param_count() -> u32 {
-    ParamId::Channel4Color.raw()
+    ParamId::Channel2Color.raw()
 }
 
 /// Return one normalized parameter value.
@@ -350,12 +350,8 @@ pub fn read_param_normalized(params: &XcopeParams, param_id: u32) -> Option<f64>
         ParamId::ZoomY => zoom_to_normalized(snapshot.zoom_y),
         ParamId::Channel1Visible => bool_to_normalized(snapshot.channel_visible[0]),
         ParamId::Channel2Visible => bool_to_normalized(snapshot.channel_visible[1]),
-        ParamId::Channel3Visible => bool_to_normalized(snapshot.channel_visible[2]),
-        ParamId::Channel4Visible => bool_to_normalized(snapshot.channel_visible[3]),
         ParamId::Channel1Color => color_to_normalized(snapshot.channel_color[0]),
         ParamId::Channel2Color => color_to_normalized(snapshot.channel_color[1]),
-        ParamId::Channel3Color => color_to_normalized(snapshot.channel_color[2]),
-        ParamId::Channel4Color => color_to_normalized(snapshot.channel_color[3]),
     };
     Some(value.clamp(0.0, 1.0))
 }
@@ -396,12 +392,8 @@ pub fn apply_param_normalized(params: &XcopeParams, param_id: u32, normalized: f
         ParamId::ZoomY => params.set_zoom_y(normalized_to_zoom(value)),
         ParamId::Channel1Visible => params.set_channel_visible(0, value >= 0.5),
         ParamId::Channel2Visible => params.set_channel_visible(1, value >= 0.5),
-        ParamId::Channel3Visible => params.set_channel_visible(2, value >= 0.5),
-        ParamId::Channel4Visible => params.set_channel_visible(3, value >= 0.5),
         ParamId::Channel1Color => params.set_channel_color(0, normalized_to_color(value)),
         ParamId::Channel2Color => params.set_channel_color(1, normalized_to_color(value)),
-        ParamId::Channel3Color => params.set_channel_color(2, normalized_to_color(value)),
-        ParamId::Channel4Color => params.set_channel_color(3, normalized_to_color(value)),
     }
     true
 }
@@ -451,7 +443,7 @@ mod tests {
         let state = XcopeUiState {
             zoom_x: 999.0,
             zoom_y: 0.0,
-            channel_color: [99, 42, 1, 0],
+            channel_color: [99, 42],
             ..XcopeUiState::default()
         };
         params.apply_snapshot(&state);
@@ -474,8 +466,8 @@ mod tests {
         params.set_freeze(true);
         params.set_zoom_x(1.5);
         params.set_zoom_y(2.5);
-        params.set_channel_visible(3, true);
-        params.set_channel_color(2, 5);
+        params.set_channel_visible(1, true);
+        params.set_channel_color(1, 5);
 
         let snapshot = params.snapshot();
         assert_eq!(snapshot.mode, ScopeMode::TempoLocked);
@@ -486,8 +478,8 @@ mod tests {
         assert!(snapshot.freeze);
         assert_eq!(snapshot.zoom_x, 1.5);
         assert_eq!(snapshot.zoom_y, 2.5);
-        assert!(snapshot.channel_visible[3]);
-        assert_eq!(snapshot.channel_color[2], 5);
+        assert!(snapshot.channel_visible[1]);
+        assert_eq!(snapshot.channel_color[1], 5);
     }
 
     #[test]

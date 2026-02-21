@@ -28,7 +28,7 @@ impl ScopeFrame {
     }
 }
 
-/// Real-time capture ring buffer storing up to 4 channels.
+/// Real-time capture ring buffer storing up to `MAX_VISUAL_CHANNELS` channels.
 #[derive(Debug)]
 pub struct ScopeCaptureBuffer {
     capacity: usize,
@@ -54,8 +54,8 @@ impl ScopeCaptureBuffer {
 
     /// Append one audio block to the capture ring.
     ///
-    /// `channels` may include any channel count. Only the first four channels
-    /// are captured for visualization.
+    /// `channels` may include any channel count. Only the first
+    /// `MAX_VISUAL_CHANNELS` channels are captured for visualization.
     pub fn write_block(&self, channels: &[&[f32]], sample_count: usize) {
         if sample_count == 0 {
             return;
@@ -90,7 +90,7 @@ impl ScopeCaptureBuffer {
 
     /// Append one sample frame to the capture ring.
     ///
-    /// `channel_count` is clamped to the first four channels.
+    /// `channel_count` is clamped to `MAX_VISUAL_CHANNELS`.
     pub fn write_sample(&self, sample: [f32; MAX_VISUAL_CHANNELS], channel_count: usize) {
         let channels = channel_count.clamp(0, MAX_VISUAL_CHANNELS);
         if channels == 0 {
