@@ -7,16 +7,20 @@ pub use layout::SCOPE_SURFACE_KEY;
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use toybox::clack_extensions::gui::{GuiSize, Window};
 use toybox::clack_plugin::plugin::PluginError;
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, InputState};
-use toybox::gui::declarative::UiAction;
+use toybox::gui::declarative::{UiAction, UiSpec};
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
 use crate::constants::{WINDOW_HEIGHT, WINDOW_WIDTH};
 use crate::scope::{build_scope_surface_commands, resolve_live_frame, ScopeFrame};
 use crate::XcopeShared;
+
+/// Frame pacing target for expensive scope frame rebuilds.
+const UI_FRAME_INTERVAL: Duration = Duration::from_micros(16_666);
 
 /// Host-window wrapper for the Xcope editor.
 #[derive(Default)]
@@ -107,6 +111,9 @@ struct GuiState {
 struct GuiRuntime {
     frozen_frame: Option<ScopeFrame>,
     last_live_frame: ScopeFrame,
+    cached_ui_spec: Option<UiSpec>,
+    last_ui_build_at: Option<Instant>,
+    ui_dirty: bool,
 }
 
 impl GuiState {
@@ -118,6 +125,11 @@ impl GuiState {
     }
 
     fn build_ui(&self, _input: &InputState) -> toybox::gui::declarative::UiSpec {
+        let now = Instant::now();
+        if let Some(spec) = self.try_take_cached_ui_spec(now) {
+            return spec;
+        }
+
         let snapshot = self.shared.params.snapshot();
         let transport = self.shared.transport.snapshot();
         let sample_rate = self.shared.sample_rate_hz();
@@ -151,7 +163,32 @@ impl GuiState {
             WINDOW_WIDTH,
             layout::SCOPE_HEIGHT,
         );
-        layout::build_ui_spec(&snapshot, commands)
+        let spec = layout::build_ui_spec(&snapshot, commands);
+        self.cache_ui_spec(now, &spec);
+        spec
+    }
+
+    fn try_take_cached_ui_spec(&self, now: Instant) -> Option<UiSpec> {
+        let Ok(runtime) = self.runtime.lock() else {
+            return None;
+        };
+        if runtime.ui_dirty {
+            return None;
+        }
+        let built_at = runtime.last_ui_build_at?;
+        if now.duration_since(built_at) < UI_FRAME_INTERVAL {
+            return runtime.cached_ui_spec.clone();
+        }
+        None
+    }
+
+    fn cache_ui_spec(&self, now: Instant, spec: &UiSpec) {
+        let Ok(mut runtime) = self.runtime.lock() else {
+            return;
+        };
+        runtime.cached_ui_spec = Some(spec.clone());
+        runtime.last_ui_build_at = Some(now);
+        runtime.ui_dirty = false;
     }
 
     fn reduce_action(&mut self, action: UiAction) {
@@ -160,6 +197,9 @@ impl GuiState {
         let Ok(mut runtime) = self.runtime.lock() else {
             return;
         };
+        runtime.ui_dirty = true;
+        runtime.cached_ui_spec = None;
+        runtime.last_ui_build_at = None;
         if snapshot.freeze {
             if (freeze_changed || runtime.frozen_frame.is_none())
                 && runtime.last_live_frame.sample_count() > 0
