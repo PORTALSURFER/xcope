@@ -50,8 +50,7 @@ fn align_tempo_locked_phase(
 
     let phase_beats = window.end_beat.rem_euclid(window.beats_visible);
     let phase_norm = (phase_beats / window.beats_visible).clamp(0.0, 1.0);
-    let shift =
-        ((phase_norm * frame.sample_count() as f64).round() as usize) % frame.sample_count();
+    let shift = ((phase_norm * frame.sample_count() as f64) as usize) % frame.sample_count();
     if shift > 0 {
         frame.samples.rotate_right(shift);
     }

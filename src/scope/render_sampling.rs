@@ -76,6 +76,42 @@ pub fn decimate_frame_channel(
     decimate_min_max(&samples, columns)
 }
 
+/// Resample one channel within a captured scope frame using linear interpolation.
+///
+/// This is optimized for visual stability: each output point maps to a stable
+/// normalized position in the source frame, which avoids decimation bucket
+/// "boiling" artifacts during scrolling.
+pub fn resample_frame_channel_linear(
+    frame: &ScopeFrame,
+    channel_index: usize,
+    points: usize,
+) -> Vec<f32> {
+    if points == 0 || frame.sample_count() == 0 || channel_index >= frame.channel_count {
+        return Vec::new();
+    }
+    if frame.sample_count() == 1 {
+        return vec![frame.sample(channel_index, 0); points];
+    }
+    if points == 1 {
+        return vec![frame.sample(channel_index, 0)];
+    }
+
+    let sample_count = frame.sample_count();
+    let max_src = (sample_count - 1) as f64;
+    let mut values = Vec::with_capacity(points);
+    for point_index in 0..points {
+        let t = point_index as f64 / (points - 1) as f64;
+        let src_pos = t * max_src;
+        let src_index = src_pos.floor() as usize;
+        let next_index = (src_index + 1).min(sample_count - 1);
+        let frac = (src_pos - src_index as f64) as f32;
+        let a = frame.sample(channel_index, src_index);
+        let b = frame.sample(channel_index, next_index);
+        values.push((a + (b - a) * frac).clamp(-1.2, 1.2));
+    }
+    values
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -124,5 +160,24 @@ mod tests {
             samples: vec![[0.25; MAX_VISUAL_CHANNELS]],
         };
         assert!(decimate_frame_channel(&frame, 1, 8).is_empty());
+    }
+
+    #[test]
+    fn linear_resample_interpolates_dense_points() {
+        let frame = ScopeFrame {
+            channel_count: 1,
+            samples: vec![[0.0; MAX_VISUAL_CHANNELS], [1.0; MAX_VISUAL_CHANNELS]],
+        };
+        let resampled = resample_frame_channel_linear(&frame, 0, 5);
+        assert_eq!(resampled, vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+    }
+
+    #[test]
+    fn linear_resample_rejects_out_of_range_channel() {
+        let frame = ScopeFrame {
+            channel_count: 1,
+            samples: vec![[0.0; MAX_VISUAL_CHANNELS], [1.0; MAX_VISUAL_CHANNELS]],
+        };
+        assert!(resample_frame_channel_linear(&frame, 1, 16).is_empty());
     }
 }
