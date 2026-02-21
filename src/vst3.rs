@@ -19,6 +19,7 @@ use crate::XcopeShared;
 
 const PROCESSOR_CID: TUID = uid(0x9AF47871, 0x00A645F3, 0x9D8A34AA, 0x7D4E7821);
 const CONTROLLER_CID: TUID = uid(0x0B49357D, 0xF45A4D2D, 0xA67A66AE, 0xD7C24B7A);
+const DEFAULT_MAIN_SPEAKER_ARRANGEMENT: SpeakerArrangement = SpeakerArr::kStereo;
 
 #[cfg(target_os = "windows")]
 const fn vst3_bus_flag(flag: i32) -> u32 {
@@ -38,6 +39,28 @@ const fn vst3_process_state_flag(flag: i32) -> u32 {
 #[cfg(not(target_os = "windows"))]
 const fn vst3_process_state_flag(flag: u32) -> u32 {
     flag
+}
+
+#[cfg(target_os = "windows")]
+const fn vst3_process_requirement_flag(flag: i32) -> u32 {
+    flag as u32
+}
+
+#[cfg(not(target_os = "windows"))]
+const fn vst3_process_requirement_flag(flag: u32) -> u32 {
+    flag
+}
+
+fn is_supported_main_arrangement(arrangement: SpeakerArrangement) -> bool {
+    matches!(arrangement, SpeakerArr::kMono | SpeakerArr::kStereo)
+}
+
+fn channel_count_for_arrangement(arrangement: SpeakerArrangement) -> i32 {
+    match arrangement {
+        SpeakerArr::kMono => 1,
+        SpeakerArr::kStereo => 2,
+        _ => 2,
+    }
 }
 
 #[derive(Copy, Clone)]
@@ -113,11 +136,28 @@ fn release_shared_for_role(shared: &Arc<XcopeShared>, role: SharedRole) {
 
 struct XcopeVst3Processor {
     shared: Arc<XcopeShared>,
+    main_arrangement: Mutex<SpeakerArrangement>,
 }
 
 impl XcopeVst3Processor {
     fn new(shared: Arc<XcopeShared>) -> Self {
-        Self { shared }
+        Self {
+            shared,
+            main_arrangement: Mutex::new(DEFAULT_MAIN_SPEAKER_ARRANGEMENT),
+        }
+    }
+
+    fn read_main_arrangement(&self) -> SpeakerArrangement {
+        self.main_arrangement
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or(DEFAULT_MAIN_SPEAKER_ARRANGEMENT)
+    }
+
+    fn write_main_arrangement(&self, arrangement: SpeakerArrangement) {
+        if let Ok(mut guard) = self.main_arrangement.lock() {
+            *guard = arrangement;
+        }
     }
 }
 
@@ -154,11 +194,11 @@ impl IComponentTrait for XcopeVst3Processor {
     }
 
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
-        if media_type as MediaTypes != MediaTypes_::kAudio {
-            return 0;
-        }
-        match dir as BusDirections {
-            BusDirections_::kInput | BusDirections_::kOutput => 1,
+        match media_type as MediaTypes {
+            MediaTypes_::kAudio => match dir as BusDirections {
+                BusDirections_::kInput | BusDirections_::kOutput => 1,
+                _ => 0,
+            },
             _ => 0,
         }
     }
@@ -170,20 +210,22 @@ impl IComponentTrait for XcopeVst3Processor {
         index: i32,
         bus: *mut BusInfo,
     ) -> tresult {
-        if bus.is_null() || index != 0 || media_type as MediaTypes != MediaTypes_::kAudio {
+        if bus.is_null() || index != 0 {
             return kInvalidArgument;
         }
+        if media_type as MediaTypes != MediaTypes_::kAudio {
+            return kInvalidArgument;
+        }
+        let label = match dir as BusDirections {
+            BusDirections_::kInput => "Input",
+            BusDirections_::kOutput => "Output",
+            _ => return kInvalidArgument,
+        };
         let bus = unsafe { &mut *bus };
         bus.mediaType = MediaTypes_::kAudio as MediaType;
         bus.direction = dir;
-        bus.channelCount = MAX_VISUAL_CHANNELS as i32;
-        copy_wstring(
-            match dir as BusDirections {
-                BusDirections_::kInput => "Input",
-                _ => "Output",
-            },
-            &mut bus.name,
-        );
+        bus.channelCount = channel_count_for_arrangement(self.read_main_arrangement());
+        copy_wstring(label, &mut bus.name);
         bus.busType = BusTypes_::kMain as BusType;
         bus.flags = vst3_bus_flag(BusInfo_::BusFlags_::kDefaultActive);
         kResultOk
@@ -238,22 +280,19 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
         outputs: *mut SpeakerArrangement,
         num_outs: i32,
     ) -> tresult {
-        if inputs.is_null() || outputs.is_null() || num_ins != 1 || num_outs != 1 {
+        if num_ins != 1 || num_outs != 1 {
+            return kResultFalse;
+        }
+        if inputs.is_null() || outputs.is_null() {
             return kInvalidArgument;
         }
         let in_arr = unsafe { *inputs };
         let out_arr = unsafe { *outputs };
-        if in_arr != out_arr {
+        if in_arr != out_arr || !is_supported_main_arrangement(in_arr) {
             return kResultFalse;
         }
-        if matches!(
-            in_arr,
-            SpeakerArr::kMono | SpeakerArr::kStereo | SpeakerArr::k30Cine | SpeakerArr::k31Cine
-        ) {
-            kResultTrue
-        } else {
-            kResultFalse
-        }
+        self.write_main_arrangement(in_arr);
+        kResultTrue
     }
 
     unsafe fn getBusArrangement(
@@ -265,20 +304,20 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
         if arr.is_null() || index != 0 {
             return kInvalidArgument;
         }
-        if !matches!(
-            dir as BusDirections,
-            BusDirections_::kInput | BusDirections_::kOutput
-        ) {
-            return kInvalidArgument;
+        match dir as BusDirections {
+            BusDirections_::kInput | BusDirections_::kOutput => {
+                unsafe { *arr = self.read_main_arrangement() };
+                kResultOk
+            }
+            _ => kInvalidArgument,
         }
-        unsafe { *arr = SpeakerArr::k31Cine };
-        kResultOk
     }
 
     unsafe fn canProcessSampleSize(&self, symbolic_sample_size: i32) -> tresult {
         match symbolic_sample_size as SymbolicSampleSizes {
             SymbolicSampleSizes_::kSample32 => kResultOk,
-            _ => kNotImplemented,
+            SymbolicSampleSizes_::kSample64 => kNotImplemented,
+            _ => kInvalidArgument,
         }
     }
 
@@ -357,7 +396,13 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
 
 impl IProcessContextRequirementsTrait for XcopeVst3Processor {
     unsafe fn getProcessContextRequirements(&self) -> u32 {
-        0
+        vst3_process_requirement_flag(IProcessContextRequirements_::Flags_::kNeedTempo)
+            | vst3_process_requirement_flag(
+                IProcessContextRequirements_::Flags_::kNeedProjectTimeMusic,
+            )
+            | vst3_process_requirement_flag(
+                IProcessContextRequirements_::Flags_::kNeedTransportState,
+            )
     }
 }
 
@@ -731,4 +776,22 @@ unsafe fn first_bus_channel_lists(data: &ProcessData) -> Option<(&[*mut f32], &[
         unsafe { slice::from_raw_parts(input_channels_ptr, channel_count) },
         unsafe { slice::from_raw_parts(output_channels_ptr, channel_count) },
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn main_arrangement_support_is_stereo_or_mono_only() {
+        assert!(is_supported_main_arrangement(SpeakerArr::kMono));
+        assert!(is_supported_main_arrangement(SpeakerArr::kStereo));
+        assert!(!is_supported_main_arrangement(SpeakerArr::k31Cine));
+    }
+
+    #[test]
+    fn main_arrangement_channel_count_tracks_supported_layout() {
+        assert_eq!(channel_count_for_arrangement(SpeakerArr::kMono), 1);
+        assert_eq!(channel_count_for_arrangement(SpeakerArr::kStereo), 2);
+    }
 }

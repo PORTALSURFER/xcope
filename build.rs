@@ -163,6 +163,25 @@ fn parse_string(value: &str) -> Result<String, String> {
 }
 
 fn select_artifact_for_invocation(config: &BuildConfig) -> ArtifactKind {
+    // Cargo sets `CARGO_FEATURE_<NAME>` for enabled package features. Use this
+    // to keep artifact routing aligned with explicit `--features vst3` builds.
+    if env::var_os("CARGO_FEATURE_VST3").is_some() {
+        if let Some(active) = env::var_os("TOYBOX_ACTIVE_ARTIFACT") {
+            let active = active.to_string_lossy().to_ascii_lowercase();
+            if active != "vst3" {
+                println!(
+                    "cargo:warning=ignoring TOYBOX_ACTIVE_ARTIFACT={active} because `--features vst3` requires VST3 output for this invocation."
+                );
+            }
+        }
+        if !config.vst3 {
+            println!(
+                "cargo:warning=`vst3` feature is enabled but toybox.toml disables vst3 artifacts; forcing VST3 output for this invocation."
+            );
+        }
+        return ArtifactKind::Vst3;
+    }
+
     if let Some(active) = env::var_os("TOYBOX_ACTIVE_ARTIFACT") {
         let active = active.to_string_lossy().to_ascii_lowercase();
         return match active.as_str() {
@@ -172,17 +191,6 @@ fn select_artifact_for_invocation(config: &BuildConfig) -> ArtifactKind {
                 panic!("unsupported TOYBOX_ACTIVE_ARTIFACT `{other}`. Expected `clap` or `vst3`.");
             }
         };
-    }
-
-    // Cargo sets `CARGO_FEATURE_<NAME>` for enabled package features. Use this
-    // to keep artifact routing aligned with explicit `--features vst3` builds.
-    if env::var_os("CARGO_FEATURE_VST3").is_some() {
-        if !config.vst3 {
-            println!(
-                "cargo:warning=`vst3` feature is enabled but toybox.toml disables vst3 artifacts; forcing VST3 output for this invocation."
-            );
-        }
-        return ArtifactKind::Vst3;
     }
 
     match (config.clap, config.vst3) {
