@@ -77,14 +77,22 @@ has_screenshot_symbol_in_src() {
   echo "${src_files}" | xargs grep -n 'screenshot_renders_initial_ui' >/dev/null 2>&1
 }
 
+has_gui_entrypoint() {
+  [ -f src/gui.rs ] || [ -f src/gui/mod.rs ]
+}
+
+gui_source_files() {
+  git ls-files | grep -E '^src/gui([.]rs|/.*[.]rs)$' || true
+}
+
 # Screenshot coverage checks (meta-workspace only):
-# If this plugin has a src/gui.rs, then either:
+# If this plugin has a GUI module entrypoint, then either:
 # - it provides screenshot coverage via screenshot-test + screenshot_renders_initial_ui, or
 # - it is explicitly marked unsupported in the meta-root coverage policy file.
 #
 # This check is skipped when the coverage file is not available (for example:
 # when running inside the standalone plugin repo outside the meta workspace).
-if git ls-files --error-unmatch src/gui.rs >/dev/null 2>&1; then
+if has_gui_entrypoint; then
   has_screenshot_feature=0
   if grep -qE '^[[:space:]]*screenshot-test[[:space:]]*=' Cargo.toml; then
     has_screenshot_feature=1
@@ -102,9 +110,9 @@ if git ls-files --error-unmatch src/gui.rs >/dev/null 2>&1; then
       if [ "${supported}" = "false" ]; then
         : # explicitly unsupported; ok
       elif [ "${supported}" = "true" ]; then
-        fail "${plugin_name} has src/gui.rs but does not provide screenshot_renders_initial_ui with screenshot-test; coverage policy marks it supported (${coverage_file})"
+        fail "${plugin_name} has GUI sources but does not provide screenshot_renders_initial_ui with screenshot-test; coverage policy marks it supported (${coverage_file})"
       else
-        fail "${plugin_name} has src/gui.rs but has no screenshot coverage and no coverage policy entry in ${coverage_file}"
+        fail "${plugin_name} has GUI sources but has no screenshot coverage and no coverage policy entry in ${coverage_file}"
       fi
     fi
   else
@@ -157,11 +165,17 @@ fi
 
 # Strict slot-tree invariant checks are required for plugins that author UIs
 # with slot-layout helpers.
-if git ls-files --error-unmatch src/gui.rs >/dev/null 2>&1; then
-  strict_slot_helpers="$(grep -nE 'row_slots|column_slots|weighted_slot|fraction_slot|fill_slot' src/gui.rs || true)"
-  if [ -n "${strict_slot_helpers}" ]; then
-    if ! grep -q 'fn emitted_ui_spec_passes_strict_slot_validation' src/gui.rs; then
-      fail "src/gui.rs uses strict slot helpers and must include emitted_ui_spec_passes_strict_slot_validation to guard root->slot->container/widget invariants"
+if has_gui_entrypoint; then
+  gui_files="$(gui_source_files)"
+  if [ -n "${gui_files}" ]; then
+    # shellcheck disable=SC2086
+    strict_slot_helpers="$(echo "${gui_files}" | xargs grep -nE 'row_slots|column_slots|weighted_slot|fraction_slot|fill_slot' 2>/dev/null || true)"
+    if [ -n "${strict_slot_helpers}" ]; then
+      # shellcheck disable=SC2086
+      strict_validation_anchor="$(echo "${gui_files}" | xargs grep -n 'fn emitted_ui_spec_passes_strict_slot_validation' 2>/dev/null || true)"
+      if [ -z "${strict_validation_anchor}" ]; then
+        fail "GUI slot-helper usage requires emitted_ui_spec_passes_strict_slot_validation to guard root->slot->container/widget invariants"
+      fi
     fi
   fi
 fi
