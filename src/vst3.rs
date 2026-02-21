@@ -504,10 +504,12 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
             );
         }
 
+        let previous_transport = self.shared.transport.snapshot();
         self.shared.transport.update(transport_from_context(
             data.processContext,
             data.numSamples,
             self.shared.sample_rate_hz(),
+            previous_transport,
         ));
         if data.numSamples <= 0 || data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
         {
@@ -821,9 +823,10 @@ fn transport_from_context(
     process_context: *mut ProcessContext,
     num_samples: i32,
     sample_rate_hz: f32,
+    previous: TransportSnapshot,
 ) -> TransportSnapshot {
     let Some(ctx) = (unsafe { process_context.as_ref() }) else {
-        return TransportSnapshot::default();
+        return previous;
     };
     let flags = ctx.state;
     let tempo_valid =
@@ -843,10 +846,14 @@ fn transport_from_context(
             Some(base)
         }
     } else {
-        None
+        previous.song_pos_beats
     };
     TransportSnapshot {
-        tempo_bpm: if tempo_valid { ctx.tempo as f32 } else { 120.0 },
+        tempo_bpm: if tempo_valid {
+            ctx.tempo as f32
+        } else {
+            previous.tempo_bpm
+        },
         is_playing,
         song_pos_beats,
         time_sig_num: if (flags
@@ -855,7 +862,7 @@ fn transport_from_context(
         {
             ctx.timeSigNumerator as u16
         } else {
-            4
+            previous.time_sig_num
         },
         time_sig_denom: if (flags
             & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kTimeSigValid))
@@ -863,7 +870,7 @@ fn transport_from_context(
         {
             ctx.timeSigDenominator as u16
         } else {
-            4
+            previous.time_sig_denom
         },
     }
 }
