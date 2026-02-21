@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["portalsurfer"]
 publish = false
+build = "build.rs"
 
 [lib]
 crate-type = ["cdylib"]
