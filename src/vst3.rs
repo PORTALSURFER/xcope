@@ -5,6 +5,7 @@
 use std::ffi::{c_void, CStr};
 use std::ptr;
 use std::slice;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, OnceLock, Weak};
 
 use toybox::vst3::prelude::Steinberg::*;
@@ -19,7 +20,6 @@ use crate::XcopeShared;
 
 const PROCESSOR_CID: TUID = uid(0x9AF47871, 0x00A645F3, 0x9D8A34AA, 0x7D4E7821);
 const CONTROLLER_CID: TUID = uid(0x0B49357D, 0xF45A4D2D, 0xA67A66AE, 0xD7C24B7A);
-const DEFAULT_MAIN_SPEAKER_ARRANGEMENT: SpeakerArrangement = SpeakerArr::kStereo;
 const INPUT_SOURCE_BUS_COUNT: usize = MAX_VISUAL_CHANNELS;
 
 #[cfg(target_os = "windows")]
@@ -53,33 +53,115 @@ const fn vst3_process_requirement_flag(flag: u32) -> u32 {
 }
 
 fn is_supported_bus_arrangement(arrangement: SpeakerArrangement) -> bool {
-    matches!(arrangement, SpeakerArr::kMono | SpeakerArr::kStereo)
+    BusChannelLayout::from_arrangement(arrangement).is_some()
 }
 
-fn channel_count_for_arrangement(arrangement: SpeakerArrangement) -> i32 {
-    match arrangement {
-        SpeakerArr::kMono => 1,
-        SpeakerArr::kStereo => 2,
-        _ => 2,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BusChannelLayout {
+    Mono,
+    Stereo,
+}
+
+impl BusChannelLayout {
+    const fn to_code(self) -> u32 {
+        match self {
+            Self::Mono => 1,
+            Self::Stereo => 2,
+        }
+    }
+
+    const fn from_code(value: u32) -> Self {
+        match value {
+            1 => Self::Mono,
+            _ => Self::Stereo,
+        }
+    }
+
+    const fn from_arrangement(arrangement: SpeakerArrangement) -> Option<Self> {
+        match arrangement {
+            SpeakerArr::kMono => Some(Self::Mono),
+            SpeakerArr::kStereo => Some(Self::Stereo),
+            _ => None,
+        }
+    }
+
+    const fn to_arrangement(self) -> SpeakerArrangement {
+        match self {
+            Self::Mono => SpeakerArr::kMono,
+            Self::Stereo => SpeakerArr::kStereo,
+        }
+    }
+
+    const fn channel_count(self) -> i32 {
+        match self {
+            Self::Mono => 1,
+            Self::Stereo => 2,
+        }
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-struct BusConfiguration {
-    output_arrangement: SpeakerArrangement,
-    input_arrangements: [SpeakerArrangement; INPUT_SOURCE_BUS_COUNT],
-    input_active: [bool; INPUT_SOURCE_BUS_COUNT],
+#[derive(Debug)]
+struct AtomicBusConfiguration {
+    output_layout: AtomicU32,
+    input_layouts: [AtomicU32; INPUT_SOURCE_BUS_COUNT],
+    input_active_mask: AtomicU32,
 }
 
-impl Default for BusConfiguration {
+impl Default for AtomicBusConfiguration {
     fn default() -> Self {
-        let mut input_active = [false; INPUT_SOURCE_BUS_COUNT];
-        input_active[0] = true;
         Self {
-            output_arrangement: DEFAULT_MAIN_SPEAKER_ARRANGEMENT,
-            input_arrangements: [DEFAULT_MAIN_SPEAKER_ARRANGEMENT; INPUT_SOURCE_BUS_COUNT],
-            input_active,
+            output_layout: AtomicU32::new(BusChannelLayout::Stereo.to_code()),
+            input_layouts: std::array::from_fn(|_| {
+                AtomicU32::new(BusChannelLayout::Stereo.to_code())
+            }),
+            input_active_mask: AtomicU32::new(1),
         }
+    }
+}
+
+impl AtomicBusConfiguration {
+    fn output_layout(&self) -> BusChannelLayout {
+        BusChannelLayout::from_code(self.output_layout.load(Ordering::Relaxed))
+    }
+
+    fn input_layout(&self, index: usize) -> BusChannelLayout {
+        BusChannelLayout::from_code(self.input_layouts[index].load(Ordering::Relaxed))
+    }
+
+    fn input_active_mask(&self) -> u32 {
+        self.input_active_mask.load(Ordering::Relaxed)
+    }
+
+    fn set_input_active(&self, index: usize, active: bool) {
+        let bit = 1u32 << index;
+        if active {
+            self.input_active_mask.fetch_or(bit, Ordering::Relaxed);
+        } else {
+            self.input_active_mask.fetch_and(!bit, Ordering::Relaxed);
+        }
+    }
+
+    fn write_arrangements(
+        &self,
+        output_layout: BusChannelLayout,
+        input_layouts: &[BusChannelLayout],
+    ) {
+        self.output_layout
+            .store(output_layout.to_code(), Ordering::Relaxed);
+        for index in 0..INPUT_SOURCE_BUS_COUNT {
+            let layout = input_layouts
+                .get(index)
+                .copied()
+                .unwrap_or(BusChannelLayout::Stereo);
+            self.input_layouts[index].store(layout.to_code(), Ordering::Relaxed);
+        }
+        let active_count = input_layouts.len().min(INPUT_SOURCE_BUS_COUNT);
+        let mask = if active_count == 0 {
+            0
+        } else {
+            (1u32 << active_count) - 1
+        };
+        self.input_active_mask.store(mask, Ordering::Relaxed);
     }
 }
 
@@ -156,27 +238,14 @@ fn release_shared_for_role(shared: &Arc<XcopeShared>, role: SharedRole) {
 
 struct XcopeVst3Processor {
     shared: Arc<XcopeShared>,
-    bus_configuration: Mutex<BusConfiguration>,
+    bus_configuration: AtomicBusConfiguration,
 }
 
 impl XcopeVst3Processor {
     fn new(shared: Arc<XcopeShared>) -> Self {
         Self {
             shared,
-            bus_configuration: Mutex::new(BusConfiguration::default()),
-        }
-    }
-
-    fn read_bus_configuration(&self) -> BusConfiguration {
-        self.bus_configuration
-            .lock()
-            .map(|guard| *guard)
-            .unwrap_or_default()
-    }
-
-    fn write_bus_configuration(&self, config: BusConfiguration) {
-        if let Ok(mut guard) = self.bus_configuration.lock() {
-            *guard = config;
+            bus_configuration: AtomicBusConfiguration::default(),
         }
     }
 }
@@ -237,7 +306,6 @@ impl IComponentTrait for XcopeVst3Processor {
         if media_type as MediaTypes != MediaTypes_::kAudio {
             return kInvalidArgument;
         }
-        let config = self.read_bus_configuration();
         let index = index as usize;
         let bus = unsafe { &mut *bus };
         bus.mediaType = MediaTypes_::kAudio as MediaType;
@@ -253,7 +321,7 @@ impl IComponentTrait for XcopeVst3Processor {
                         _ => "Input 4",
                     }
                 };
-                bus.channelCount = channel_count_for_arrangement(config.input_arrangements[index]);
+                bus.channelCount = self.bus_configuration.input_layout(index).channel_count();
                 copy_wstring(label, &mut bus.name);
                 bus.busType = if index == 0 {
                     BusTypes_::kMain as BusType
@@ -268,7 +336,7 @@ impl IComponentTrait for XcopeVst3Processor {
                 kResultOk
             }
             BusDirections_::kOutput if index == 0 => {
-                bus.channelCount = channel_count_for_arrangement(config.output_arrangement);
+                bus.channelCount = self.bus_configuration.output_layout().channel_count();
                 copy_wstring("Output", &mut bus.name);
                 bus.busType = BusTypes_::kMain as BusType;
                 bus.flags = vst3_bus_flag(BusInfo_::BusFlags_::kDefaultActive);
@@ -300,9 +368,7 @@ impl IComponentTrait for XcopeVst3Processor {
             if index >= INPUT_SOURCE_BUS_COUNT {
                 return kInvalidArgument;
             }
-            let mut config = self.read_bus_configuration();
-            config.input_active[index] = state != 0;
-            self.write_bus_configuration(config);
+            self.bus_configuration.set_input_active(index, state != 0);
             return kResultOk;
         }
         if matches!(dir as BusDirections, BusDirections_::kOutput) && index == 0 {
@@ -356,6 +422,9 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
         if !is_supported_bus_arrangement(output_arrangement) {
             return kResultFalse;
         }
+        let Some(output_layout) = BusChannelLayout::from_arrangement(output_arrangement) else {
+            return kResultFalse;
+        };
         let input_arrangements = unsafe { slice::from_raw_parts(inputs, num_ins as usize) };
         if !is_supported_bus_arrangement(input_arrangements[0])
             || input_arrangements[0] != output_arrangement
@@ -368,19 +437,15 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
             }
         }
 
-        let mut config = BusConfiguration {
-            output_arrangement,
-            ..BusConfiguration::default()
-        };
+        let mut input_layouts = [BusChannelLayout::Stereo; INPUT_SOURCE_BUS_COUNT];
         for (index, arrangement) in input_arrangements.iter().copied().enumerate() {
-            config.input_arrangements[index] = arrangement;
-            config.input_active[index] = true;
+            let Some(layout) = BusChannelLayout::from_arrangement(arrangement) else {
+                return kResultFalse;
+            };
+            input_layouts[index] = layout;
         }
-        for index in input_arrangements.len()..INPUT_SOURCE_BUS_COUNT {
-            config.input_arrangements[index] = DEFAULT_MAIN_SPEAKER_ARRANGEMENT;
-            config.input_active[index] = false;
-        }
-        self.write_bus_configuration(config);
+        self.bus_configuration
+            .write_arrangements(output_layout, &input_layouts[..input_arrangements.len()]);
         kResultTrue
     }
 
@@ -393,15 +458,14 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
         if arr.is_null() || index < 0 {
             return kInvalidArgument;
         }
-        let config = self.read_bus_configuration();
         let index = index as usize;
         match dir as BusDirections {
             BusDirections_::kInput if index < INPUT_SOURCE_BUS_COUNT => {
-                unsafe { *arr = config.input_arrangements[index] };
+                unsafe { *arr = self.bus_configuration.input_layout(index).to_arrangement() };
                 kResultOk
             }
             BusDirections_::kOutput if index == 0 => {
-                unsafe { *arr = config.output_arrangement };
+                unsafe { *arr = self.bus_configuration.output_layout().to_arrangement() };
                 kResultOk
             }
             _ => kInvalidArgument,
@@ -455,7 +519,7 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
             return process_ok();
         }
         let sample_count = data.numSamples as usize;
-        let config = self.read_bus_configuration();
+        let active_mask = self.bus_configuration.input_active_mask();
         let input_buses = unsafe { process_input_buses(data) };
         let output_bus = unsafe { process_first_output_bus(data) };
 
@@ -472,7 +536,7 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
                 .enumerate()
                 .take(MAX_VISUAL_CHANNELS)
             {
-                if !config.input_active[source_index] {
+                if (active_mask & (1u32 << source_index)) == 0 {
                     continue;
                 }
                 let Some(buses) = input_buses else {
@@ -973,15 +1037,26 @@ mod tests {
 
     #[test]
     fn arrangement_channel_count_tracks_supported_layout() {
-        assert_eq!(channel_count_for_arrangement(SpeakerArr::kMono), 1);
-        assert_eq!(channel_count_for_arrangement(SpeakerArr::kStereo), 2);
+        assert_eq!(
+            BusChannelLayout::from_arrangement(SpeakerArr::kMono)
+                .expect("mono arrangement should map to channel layout")
+                .channel_count(),
+            1
+        );
+        assert_eq!(
+            BusChannelLayout::from_arrangement(SpeakerArr::kStereo)
+                .expect("stereo arrangement should map to channel layout")
+                .channel_count(),
+            2
+        );
     }
 
     #[test]
     fn default_bus_configuration_enables_only_main_input() {
-        let config = BusConfiguration::default();
-        assert_eq!(config.output_arrangement, SpeakerArr::kStereo);
-        assert_eq!(config.input_arrangements.len(), MAX_VISUAL_CHANNELS);
-        assert_eq!(config.input_active, [true, false, false, false]);
+        let config = AtomicBusConfiguration::default();
+        assert_eq!(config.output_layout(), BusChannelLayout::Stereo);
+        assert_eq!(config.input_layout(0), BusChannelLayout::Stereo);
+        assert_eq!(config.input_layout(1), BusChannelLayout::Stereo);
+        assert_eq!(config.input_active_mask(), 1);
     }
 }
