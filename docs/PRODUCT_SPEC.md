@@ -136,6 +136,8 @@ The plugin must accept up to 4 channels of input.
 Input Representation (V1):
 
 - The scope displays four independent mono lanes (`CH1`..`CH4`).
+- `CH1` maps to the hosting track input (main input bus).
+- `CH2`..`CH4` map to additional routable input sources (aux input buses) from other tracks when supported by the host.
 - Each displayed lane is treated as one mono source.
 - For now, when a routed source is stereo, the plugin uses the source's left (`L`) channel for display.
 - Right-channel or stereo summing source selection is deferred to a later version.

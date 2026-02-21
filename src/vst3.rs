@@ -20,6 +20,7 @@ use crate::XcopeShared;
 const PROCESSOR_CID: TUID = uid(0x9AF47871, 0x00A645F3, 0x9D8A34AA, 0x7D4E7821);
 const CONTROLLER_CID: TUID = uid(0x0B49357D, 0xF45A4D2D, 0xA67A66AE, 0xD7C24B7A);
 const DEFAULT_MAIN_SPEAKER_ARRANGEMENT: SpeakerArrangement = SpeakerArr::kStereo;
+const INPUT_SOURCE_BUS_COUNT: usize = MAX_VISUAL_CHANNELS;
 
 #[cfg(target_os = "windows")]
 const fn vst3_bus_flag(flag: i32) -> u32 {
@@ -51,7 +52,7 @@ const fn vst3_process_requirement_flag(flag: u32) -> u32 {
     flag
 }
 
-fn is_supported_main_arrangement(arrangement: SpeakerArrangement) -> bool {
+fn is_supported_bus_arrangement(arrangement: SpeakerArrangement) -> bool {
     matches!(arrangement, SpeakerArr::kMono | SpeakerArr::kStereo)
 }
 
@@ -60,6 +61,25 @@ fn channel_count_for_arrangement(arrangement: SpeakerArrangement) -> i32 {
         SpeakerArr::kMono => 1,
         SpeakerArr::kStereo => 2,
         _ => 2,
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BusConfiguration {
+    output_arrangement: SpeakerArrangement,
+    input_arrangements: [SpeakerArrangement; INPUT_SOURCE_BUS_COUNT],
+    input_active: [bool; INPUT_SOURCE_BUS_COUNT],
+}
+
+impl Default for BusConfiguration {
+    fn default() -> Self {
+        let mut input_active = [false; INPUT_SOURCE_BUS_COUNT];
+        input_active[0] = true;
+        Self {
+            output_arrangement: DEFAULT_MAIN_SPEAKER_ARRANGEMENT,
+            input_arrangements: [DEFAULT_MAIN_SPEAKER_ARRANGEMENT; INPUT_SOURCE_BUS_COUNT],
+            input_active,
+        }
     }
 }
 
@@ -136,27 +156,27 @@ fn release_shared_for_role(shared: &Arc<XcopeShared>, role: SharedRole) {
 
 struct XcopeVst3Processor {
     shared: Arc<XcopeShared>,
-    main_arrangement: Mutex<SpeakerArrangement>,
+    bus_configuration: Mutex<BusConfiguration>,
 }
 
 impl XcopeVst3Processor {
     fn new(shared: Arc<XcopeShared>) -> Self {
         Self {
             shared,
-            main_arrangement: Mutex::new(DEFAULT_MAIN_SPEAKER_ARRANGEMENT),
+            bus_configuration: Mutex::new(BusConfiguration::default()),
         }
     }
 
-    fn read_main_arrangement(&self) -> SpeakerArrangement {
-        self.main_arrangement
+    fn read_bus_configuration(&self) -> BusConfiguration {
+        self.bus_configuration
             .lock()
             .map(|guard| *guard)
-            .unwrap_or(DEFAULT_MAIN_SPEAKER_ARRANGEMENT)
+            .unwrap_or_default()
     }
 
-    fn write_main_arrangement(&self, arrangement: SpeakerArrangement) {
-        if let Ok(mut guard) = self.main_arrangement.lock() {
-            *guard = arrangement;
+    fn write_bus_configuration(&self, config: BusConfiguration) {
+        if let Ok(mut guard) = self.bus_configuration.lock() {
+            *guard = config;
         }
     }
 }
@@ -196,7 +216,8 @@ impl IComponentTrait for XcopeVst3Processor {
     unsafe fn getBusCount(&self, media_type: MediaType, dir: BusDirection) -> i32 {
         match media_type as MediaTypes {
             MediaTypes_::kAudio => match dir as BusDirections {
-                BusDirections_::kInput | BusDirections_::kOutput => 1,
+                BusDirections_::kInput => INPUT_SOURCE_BUS_COUNT as i32,
+                BusDirections_::kOutput => 1,
                 _ => 0,
             },
             _ => 0,
@@ -210,25 +231,51 @@ impl IComponentTrait for XcopeVst3Processor {
         index: i32,
         bus: *mut BusInfo,
     ) -> tresult {
-        if bus.is_null() || index != 0 {
+        if bus.is_null() || index < 0 {
             return kInvalidArgument;
         }
         if media_type as MediaTypes != MediaTypes_::kAudio {
             return kInvalidArgument;
         }
-        let label = match dir as BusDirections {
-            BusDirections_::kInput => "Input",
-            BusDirections_::kOutput => "Output",
-            _ => return kInvalidArgument,
-        };
+        let config = self.read_bus_configuration();
+        let index = index as usize;
         let bus = unsafe { &mut *bus };
         bus.mediaType = MediaTypes_::kAudio as MediaType;
         bus.direction = dir;
-        bus.channelCount = channel_count_for_arrangement(self.read_main_arrangement());
-        copy_wstring(label, &mut bus.name);
-        bus.busType = BusTypes_::kMain as BusType;
-        bus.flags = vst3_bus_flag(BusInfo_::BusFlags_::kDefaultActive);
-        kResultOk
+        match dir as BusDirections {
+            BusDirections_::kInput if index < INPUT_SOURCE_BUS_COUNT => {
+                let label = if index == 0 {
+                    "Input 1"
+                } else {
+                    match index {
+                        1 => "Input 2",
+                        2 => "Input 3",
+                        _ => "Input 4",
+                    }
+                };
+                bus.channelCount = channel_count_for_arrangement(config.input_arrangements[index]);
+                copy_wstring(label, &mut bus.name);
+                bus.busType = if index == 0 {
+                    BusTypes_::kMain as BusType
+                } else {
+                    BusTypes_::kAux as BusType
+                };
+                bus.flags = if index == 0 {
+                    vst3_bus_flag(BusInfo_::BusFlags_::kDefaultActive)
+                } else {
+                    0
+                };
+                kResultOk
+            }
+            BusDirections_::kOutput if index == 0 => {
+                bus.channelCount = channel_count_for_arrangement(config.output_arrangement);
+                copy_wstring("Output", &mut bus.name);
+                bus.busType = BusTypes_::kMain as BusType;
+                bus.flags = vst3_bus_flag(BusInfo_::BusFlags_::kDefaultActive);
+                kResultOk
+            }
+            _ => kInvalidArgument,
+        }
     }
 
     unsafe fn getRoutingInfo(
@@ -240,11 +287,30 @@ impl IComponentTrait for XcopeVst3Processor {
     }
     unsafe fn activateBus(
         &self,
-        _media_type: MediaType,
-        _dir: BusDirection,
-        _index: i32,
-        _state: TBool,
+        media_type: MediaType,
+        dir: BusDirection,
+        index: i32,
+        state: TBool,
     ) -> tresult {
+        if media_type as MediaTypes != MediaTypes_::kAudio || index < 0 {
+            return kInvalidArgument;
+        }
+        if matches!(dir as BusDirections, BusDirections_::kInput) {
+            let index = index as usize;
+            if index >= INPUT_SOURCE_BUS_COUNT {
+                return kInvalidArgument;
+            }
+            let mut config = self.read_bus_configuration();
+            config.input_active[index] = state != 0;
+            self.write_bus_configuration(config);
+            return kResultOk;
+        }
+        if matches!(dir as BusDirections, BusDirections_::kOutput) && index == 0 {
+            return kResultOk;
+        }
+        if matches!(dir as BusDirections, BusDirections_::kOutput) {
+            return kInvalidArgument;
+        }
         kResultOk
     }
     unsafe fn setActive(&self, _state: TBool) -> tresult {
@@ -280,18 +346,41 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
         outputs: *mut SpeakerArrangement,
         num_outs: i32,
     ) -> tresult {
-        if num_ins != 1 || num_outs != 1 {
+        if num_ins <= 0 || num_ins > INPUT_SOURCE_BUS_COUNT as i32 || num_outs != 1 {
             return kResultFalse;
         }
         if inputs.is_null() || outputs.is_null() {
             return kInvalidArgument;
         }
-        let in_arr = unsafe { *inputs };
-        let out_arr = unsafe { *outputs };
-        if in_arr != out_arr || !is_supported_main_arrangement(in_arr) {
+        let output_arrangement = unsafe { *outputs };
+        if !is_supported_bus_arrangement(output_arrangement) {
             return kResultFalse;
         }
-        self.write_main_arrangement(in_arr);
+        let input_arrangements = unsafe { slice::from_raw_parts(inputs, num_ins as usize) };
+        if !is_supported_bus_arrangement(input_arrangements[0])
+            || input_arrangements[0] != output_arrangement
+        {
+            return kResultFalse;
+        }
+        for arrangement in input_arrangements.iter().copied() {
+            if !is_supported_bus_arrangement(arrangement) {
+                return kResultFalse;
+            }
+        }
+
+        let mut config = BusConfiguration {
+            output_arrangement,
+            ..BusConfiguration::default()
+        };
+        for (index, arrangement) in input_arrangements.iter().copied().enumerate() {
+            config.input_arrangements[index] = arrangement;
+            config.input_active[index] = true;
+        }
+        for index in input_arrangements.len()..INPUT_SOURCE_BUS_COUNT {
+            config.input_arrangements[index] = DEFAULT_MAIN_SPEAKER_ARRANGEMENT;
+            config.input_active[index] = false;
+        }
+        self.write_bus_configuration(config);
         kResultTrue
     }
 
@@ -301,12 +390,18 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
         index: i32,
         arr: *mut SpeakerArrangement,
     ) -> tresult {
-        if arr.is_null() || index != 0 {
+        if arr.is_null() || index < 0 {
             return kInvalidArgument;
         }
+        let config = self.read_bus_configuration();
+        let index = index as usize;
         match dir as BusDirections {
-            BusDirections_::kInput | BusDirections_::kOutput => {
-                unsafe { *arr = self.read_main_arrangement() };
+            BusDirections_::kInput if index < INPUT_SOURCE_BUS_COUNT => {
+                unsafe { *arr = config.input_arrangements[index] };
+                kResultOk
+            }
+            BusDirections_::kOutput if index == 0 => {
+                unsafe { *arr = config.output_arrangement };
                 kResultOk
             }
             _ => kInvalidArgument,
@@ -359,33 +454,41 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
         {
             return process_ok();
         }
-        let Some((in_channels, out_channels)) = (unsafe { first_bus_channel_lists(data) }) else {
-            return process_ok();
-        };
-        let channel_count = in_channels.len().min(out_channels.len());
-        if channel_count == 0 {
-            return process_ok();
-        }
         let sample_count = data.numSamples as usize;
-        let capture_channels = channel_count.min(MAX_VISUAL_CHANNELS);
+        let config = self.read_bus_configuration();
+        let input_buses = unsafe { process_input_buses(data) };
+        let output_bus = unsafe { process_first_output_bus(data) };
+
+        if let Some(output_bus) = output_bus {
+            let main_input_bus = input_buses.and_then(|buses| buses.first());
+            unsafe { copy_main_bus_to_output(main_input_bus, output_bus, sample_count) };
+        }
 
         for sample_index in 0..sample_count {
             let mut capture_sample = [0.0f32; MAX_VISUAL_CHANNELS];
-            for channel_index in 0..channel_count {
-                if in_channels[channel_index].is_null() || out_channels[channel_index].is_null() {
+            let mut active_sources = 0usize;
+            for (source_index, slot) in capture_sample
+                .iter_mut()
+                .enumerate()
+                .take(MAX_VISUAL_CHANNELS)
+            {
+                if !config.input_active[source_index] {
                     continue;
                 }
-                let value = unsafe { *in_channels[channel_index].add(sample_index) };
-                unsafe {
-                    *out_channels[channel_index].add(sample_index) = value;
-                }
-                if channel_index < MAX_VISUAL_CHANNELS {
-                    capture_sample[channel_index] = value;
+                let Some(buses) = input_buses else {
+                    continue;
+                };
+                let Some(input_bus) = buses.get(source_index) else {
+                    continue;
+                };
+                if let Some(value) = unsafe { read_bus_left_sample(input_bus, sample_index) } {
+                    *slot = value;
+                    active_sources = active_sources.max(source_index + 1);
                 }
             }
             self.shared
                 .scope_buffer
-                .write_sample(capture_sample, capture_channels);
+                .write_sample(capture_sample, active_sources.max(1));
         }
 
         process_ok()
@@ -767,34 +870,94 @@ fn param_display_string(param_id: u32, normalized: f64) -> String {
     }
 }
 
-unsafe fn first_bus_channel_lists(data: &ProcessData) -> Option<(&[*mut f32], &[*mut f32])> {
-    if data.numInputs <= 0
-        || data.numOutputs <= 0
-        || data.inputs.is_null()
-        || data.outputs.is_null()
-    {
+unsafe fn process_input_buses(data: &ProcessData) -> Option<&[AudioBusBuffers]> {
+    if data.numInputs <= 0 || data.inputs.is_null() {
         return None;
     }
-    let input_bus_count = usize::try_from(data.numInputs).ok()?;
-    let output_bus_count = usize::try_from(data.numOutputs).ok()?;
-    let input_buses = unsafe { slice::from_raw_parts(data.inputs, input_bus_count) };
-    let output_buses = unsafe { slice::from_raw_parts(data.outputs, output_bus_count) };
-    let input_bus = input_buses.first()?;
-    let output_bus = output_buses.first()?;
+    let bus_count = usize::try_from(data.numInputs).ok()?;
+    Some(unsafe { slice::from_raw_parts(data.inputs, bus_count) })
+}
 
-    let channel_count = usize::try_from(input_bus.numChannels.min(output_bus.numChannels)).ok()?;
-    if channel_count == 0 {
+unsafe fn process_first_output_bus(data: &ProcessData) -> Option<&AudioBusBuffers> {
+    if data.numOutputs <= 0 || data.outputs.is_null() {
         return None;
     }
-    let input_channels_ptr = unsafe { input_bus.__field0.channelBuffers32 };
-    let output_channels_ptr = unsafe { output_bus.__field0.channelBuffers32 };
-    if input_channels_ptr.is_null() || output_channels_ptr.is_null() {
+    let bus_count = usize::try_from(data.numOutputs).ok()?;
+    let output_buses = unsafe { slice::from_raw_parts(data.outputs, bus_count) };
+    output_buses.first()
+}
+
+unsafe fn bus_channel_buffers_32(bus: &AudioBusBuffers) -> Option<&[*mut f32]> {
+    if bus.numChannels <= 0 {
         return None;
     }
-    Some((
-        unsafe { slice::from_raw_parts(input_channels_ptr, channel_count) },
-        unsafe { slice::from_raw_parts(output_channels_ptr, channel_count) },
-    ))
+    let channel_count = usize::try_from(bus.numChannels).ok()?;
+    let channels_ptr = unsafe { bus.__field0.channelBuffers32 };
+    if channels_ptr.is_null() {
+        return None;
+    }
+    Some(unsafe { slice::from_raw_parts(channels_ptr, channel_count) })
+}
+
+unsafe fn read_bus_left_sample(bus: &AudioBusBuffers, sample_index: usize) -> Option<f32> {
+    let channels = unsafe { bus_channel_buffers_32(bus) }?;
+    let left = channels.first().copied()?;
+    if left.is_null() {
+        return None;
+    }
+    Some(unsafe { *left.add(sample_index) })
+}
+
+unsafe fn copy_main_bus_to_output(
+    input_bus: Option<&AudioBusBuffers>,
+    output_bus: &AudioBusBuffers,
+    sample_count: usize,
+) {
+    let Some(output_channels) = (unsafe { bus_channel_buffers_32(output_bus) }) else {
+        return;
+    };
+    let input_channels = input_bus.and_then(|bus| unsafe { bus_channel_buffers_32(bus) });
+    let copy_channels = input_channels
+        .map(|channels| channels.len().min(output_channels.len()))
+        .unwrap_or(0);
+
+    for (channel_index, output_channel) in output_channels
+        .iter()
+        .copied()
+        .enumerate()
+        .take(copy_channels)
+    {
+        let input_channel = input_channels
+            .and_then(|channels| channels.get(channel_index).copied())
+            .unwrap_or(ptr::null_mut());
+        if output_channel.is_null() {
+            continue;
+        }
+        if input_channel.is_null() {
+            for sample_index in 0..sample_count {
+                unsafe {
+                    *output_channel.add(sample_index) = 0.0;
+                }
+            }
+            continue;
+        }
+        for sample_index in 0..sample_count {
+            unsafe {
+                *output_channel.add(sample_index) = *input_channel.add(sample_index);
+            }
+        }
+    }
+
+    for output_channel in output_channels.iter().skip(copy_channels).copied() {
+        if output_channel.is_null() {
+            continue;
+        }
+        for sample_index in 0..sample_count {
+            unsafe {
+                *output_channel.add(sample_index) = 0.0;
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -802,15 +965,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn main_arrangement_support_is_stereo_or_mono_only() {
-        assert!(is_supported_main_arrangement(SpeakerArr::kMono));
-        assert!(is_supported_main_arrangement(SpeakerArr::kStereo));
-        assert!(!is_supported_main_arrangement(SpeakerArr::k31Cine));
+    fn bus_arrangement_support_is_stereo_or_mono_only() {
+        assert!(is_supported_bus_arrangement(SpeakerArr::kMono));
+        assert!(is_supported_bus_arrangement(SpeakerArr::kStereo));
+        assert!(!is_supported_bus_arrangement(SpeakerArr::k31Cine));
     }
 
     #[test]
-    fn main_arrangement_channel_count_tracks_supported_layout() {
+    fn arrangement_channel_count_tracks_supported_layout() {
         assert_eq!(channel_count_for_arrangement(SpeakerArr::kMono), 1);
         assert_eq!(channel_count_for_arrangement(SpeakerArr::kStereo), 2);
+    }
+
+    #[test]
+    fn default_bus_configuration_enables_only_main_input() {
+        let config = BusConfiguration::default();
+        assert_eq!(config.output_arrangement, SpeakerArr::kStereo);
+        assert_eq!(config.input_arrangements.len(), MAX_VISUAL_CHANNELS);
+        assert_eq!(config.input_active, [true, false, false, false]);
     }
 }
