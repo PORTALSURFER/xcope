@@ -23,6 +23,17 @@ pub struct TransportSnapshot {
     pub time_sig_denom: u16,
 }
 
+/// Beat-domain window used by tempo-locked scope rendering and sampling.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TempoLockedWindow {
+    /// Visible window start in beat units.
+    pub start_beat: f64,
+    /// Visible window end in beat units.
+    pub end_beat: f64,
+    /// Visible beat span.
+    pub beats_visible: f64,
+}
+
 impl Default for TransportSnapshot {
     fn default() -> Self {
         Self {
@@ -114,16 +125,18 @@ pub fn resolve_visible_sample_count(
     sample_rate_hz: f32,
 ) -> usize {
     let sample_rate = sample_rate_hz.max(1.0);
-    let zoom = ui_state.zoom_x.max(0.01);
-    let base_samples = match ui_state.mode {
-        ScopeMode::TempoLocked if transport.song_pos_beats.is_some() => {
-            let beats_visible = beats_visible(ui_state.time_window, transport);
-            beats_to_samples(beats_visible, transport.tempo_bpm, sample_rate)
-        }
-        _ => free_running_window_samples(ui_state.time_window, sample_rate),
-    };
+    if let Some(window) = resolve_tempo_locked_window(ui_state, transport) {
+        let samples = beats_to_samples(
+            window.beats_visible as f32,
+            transport.tempo_bpm,
+            sample_rate,
+        );
+        return samples.clamp(MIN_SCOPE_WINDOW_SAMPLES, MAX_SCOPE_WINDOW_SAMPLES);
+    }
 
-    let zoomed = (base_samples as f32 / zoom).round() as usize;
+    let zoomed = (free_running_window_samples(ui_state.time_window, sample_rate) as f32
+        / ui_state.zoom_x.max(0.01))
+    .round() as usize;
     zoomed.clamp(MIN_SCOPE_WINDOW_SAMPLES, MAX_SCOPE_WINDOW_SAMPLES)
 }
 
@@ -139,6 +152,31 @@ pub fn subdivisions_for_grid(base: crate::params::GridSubdivision, triplet: bool
     } else {
         div
     }
+}
+
+/// Resolve the tempo-locked beat-domain window for the current UI/transport state.
+///
+/// Returns `None` whenever tempo-locked anchoring is unavailable (for example
+/// free-running mode or missing host song position), and callers should fall
+/// back to free-running behavior.
+pub fn resolve_tempo_locked_window(
+    ui_state: &XcopeUiState,
+    transport: TransportSnapshot,
+) -> Option<TempoLockedWindow> {
+    if ui_state.mode != ScopeMode::TempoLocked {
+        return None;
+    }
+    let end_beat = transport.song_pos_beats?;
+    let zoom = ui_state.zoom_x.max(0.01) as f64;
+    let beats_visible = (beats_visible(ui_state.time_window, transport) as f64) / zoom;
+    if !beats_visible.is_finite() || beats_visible <= 0.0 {
+        return None;
+    }
+    Some(TempoLockedWindow {
+        start_beat: end_beat - beats_visible,
+        end_beat,
+        beats_visible,
+    })
 }
 
 fn free_running_window_samples(window: TimeWindow, sample_rate: f32) -> usize {
@@ -246,6 +284,50 @@ mod tests {
         let state = tempo_locked_state();
         let samples = resolve_visible_sample_count(&state, TransportSnapshot::default(), 48_000.0);
         assert_eq!(samples, 48_000);
+    }
+
+    #[test]
+    fn tempo_locked_window_tracks_song_position_and_zoom() {
+        let state = XcopeUiState {
+            mode: ScopeMode::TempoLocked,
+            time_window: TimeWindow::OneBar,
+            zoom_x: 2.0,
+            ..XcopeUiState::default()
+        };
+        let window = resolve_tempo_locked_window(
+            &state,
+            TransportSnapshot {
+                tempo_bpm: 120.0,
+                song_pos_beats: Some(17.5),
+                time_sig_num: 4,
+                time_sig_denom: 4,
+                ..TransportSnapshot::default()
+            },
+        )
+        .expect("tempo-locked window should resolve");
+        assert!((window.beats_visible - 2.0).abs() < 1.0e-6);
+        assert!((window.end_beat - 17.5).abs() < 1.0e-6);
+        assert!((window.start_beat - 15.5).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn tempo_locked_window_respects_time_signature_beats_per_bar() {
+        let state = XcopeUiState {
+            mode: ScopeMode::TempoLocked,
+            time_window: TimeWindow::OneBar,
+            ..XcopeUiState::default()
+        };
+        let window = resolve_tempo_locked_window(
+            &state,
+            TransportSnapshot {
+                song_pos_beats: Some(9.0),
+                time_sig_num: 3,
+                time_sig_denom: 4,
+                ..TransportSnapshot::default()
+            },
+        )
+        .expect("tempo-locked window should resolve");
+        assert!((window.beats_visible - 3.0).abs() < 1.0e-6);
     }
 
     #[test]

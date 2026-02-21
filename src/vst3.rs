@@ -350,9 +350,11 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
             );
         }
 
-        self.shared
-            .transport
-            .update(transport_from_context(data.processContext));
+        self.shared.transport.update(transport_from_context(
+            data.processContext,
+            data.numSamples,
+            self.shared.sample_rate_hz(),
+        ));
         if data.numSamples <= 0 || data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
         {
             return process_ok();
@@ -653,7 +655,11 @@ impl IPluginFactoryTrait for XcopeVst3Factory {
 
 toybox::vst3_plugin_entry!(XcopeVst3Factory);
 
-fn transport_from_context(process_context: *mut ProcessContext) -> TransportSnapshot {
+fn transport_from_context(
+    process_context: *mut ProcessContext,
+    num_samples: i32,
+    sample_rate_hz: f32,
+) -> TransportSnapshot {
     let Some(ctx) = (unsafe { process_context.as_ref() }) else {
         return TransportSnapshot::default();
     };
@@ -663,11 +669,24 @@ fn transport_from_context(process_context: *mut ProcessContext) -> TransportSnap
     let pos_valid = (flags
         & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid))
         != 0;
+    let is_playing =
+        (flags & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kPlaying)) != 0;
+    let song_pos_beats = if pos_valid {
+        let base = ctx.projectTimeMusic;
+        let can_advance = is_playing && tempo_valid && num_samples > 0 && sample_rate_hz > 1.0;
+        if can_advance {
+            let advanced = base + (num_samples as f64 * (ctx.tempo / 60.0) / sample_rate_hz as f64);
+            Some(advanced)
+        } else {
+            Some(base)
+        }
+    } else {
+        None
+    };
     TransportSnapshot {
         tempo_bpm: if tempo_valid { ctx.tempo as f32 } else { 120.0 },
-        is_playing: (flags & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kPlaying))
-            != 0,
-        song_pos_beats: pos_valid.then_some(ctx.projectTimeMusic),
+        is_playing,
+        song_pos_beats,
         time_sig_num: if (flags
             & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kTimeSigValid))
             != 0

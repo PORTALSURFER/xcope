@@ -3,9 +3,9 @@
 use toybox::gui::declarative::SurfaceCommand;
 use toybox::gui::{Color, Point, Rect};
 
-use crate::params::{DisplayMode, ScopeMode, TimeWindow, XcopeUiState};
+use crate::params::{DisplayMode, XcopeUiState};
 use crate::scope::ScopeFrame;
-use crate::transport::{subdivisions_for_grid, TransportSnapshot};
+use crate::transport::{resolve_tempo_locked_window, subdivisions_for_grid, TransportSnapshot};
 
 /// Build region draw commands for one scope frame.
 pub fn build_scope_surface_commands(
@@ -27,22 +27,14 @@ pub fn build_scope_surface_commands(
         color: Color::rgb(14, 17, 20),
     });
 
-    let grid_line_count = vertical_grid_lines(ui_state, transport).max(2);
-    for step in 0..=grid_line_count {
-        let x = ((step as f32 / grid_line_count as f32) * width_i32 as f32).round() as i32;
+    for (x, tone) in vertical_grid_lines(ui_state, transport, width_i32) {
         commands.push(SurfaceCommand::Line {
-            start: Point {
-                x: x.clamp(0, width_i32),
-                y: 0,
-            },
-            end: Point {
-                x: x.clamp(0, width_i32),
-                y: height_i32,
-            },
-            color: if step % 4 == 0 {
-                Color::rgb(44, 50, 57)
-            } else {
-                Color::rgb(30, 35, 41)
+            start: Point { x, y: 0 },
+            end: Point { x, y: height_i32 },
+            color: match tone {
+                GridTone::Bar => Color::rgb(44, 50, 57),
+                GridTone::Beat => Color::rgb(36, 41, 47),
+                GridTone::Subdivision => Color::rgb(30, 35, 41),
             },
         });
     }
@@ -163,22 +155,62 @@ fn draw_waveform_channel(
     }
 }
 
-fn vertical_grid_lines(ui_state: &XcopeUiState, transport: TransportSnapshot) -> u32 {
-    match ui_state.mode {
-        ScopeMode::TempoLocked if transport.song_pos_beats.is_some() => {
-            let beats_per_bar = beats_per_bar(transport.time_sig_num, transport.time_sig_denom);
-            let beats_visible = match ui_state.time_window {
-                TimeWindow::OneBeat => 1.0,
-                TimeWindow::OneBar => beats_per_bar,
-                TimeWindow::TwoBars => beats_per_bar * 2.0,
-                TimeWindow::FourBars => beats_per_bar * 4.0,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum GridTone {
+    Bar,
+    Beat,
+    Subdivision,
+}
+
+fn vertical_grid_lines(
+    ui_state: &XcopeUiState,
+    transport: TransportSnapshot,
+    width: i32,
+) -> Vec<(i32, GridTone)> {
+    if let Some(window) = resolve_tempo_locked_window(ui_state, transport) {
+        let subdivisions =
+            subdivisions_for_grid(ui_state.grid_subdivision, ui_state.grid_triplet).max(1) as f64;
+        let step_beats = 1.0 / subdivisions;
+        let first_step = (window.start_beat / step_beats).floor() as i64 - 1;
+        let last_step = (window.end_beat / step_beats).ceil() as i64 + 1;
+        let beats_per_bar = beats_per_bar(transport.time_sig_num, transport.time_sig_denom) as f64;
+        let mut lines = Vec::new();
+        for step in first_step..=last_step {
+            let beat = step as f64 * step_beats;
+            if beat < window.start_beat || beat > window.end_beat {
+                continue;
+            }
+            let x_norm = ((beat - window.start_beat) / window.beats_visible).clamp(0.0, 1.0);
+            let x = (x_norm * width as f64).round() as i32;
+            let tone = if is_multiple(beat, beats_per_bar, 1.0e-6) {
+                GridTone::Bar
+            } else if is_multiple(beat, 1.0, 1.0e-6) {
+                GridTone::Beat
+            } else {
+                GridTone::Subdivision
             };
-            let subdivisions =
-                subdivisions_for_grid(ui_state.grid_subdivision, ui_state.grid_triplet);
-            ((beats_visible * subdivisions as f32).round() as u32).max(2)
+            lines.push((x.clamp(0, width), tone));
         }
-        _ => 8,
+        if lines.is_empty() {
+            return vec![(0, GridTone::Bar), (width, GridTone::Bar)];
+        }
+        lines.sort_by_key(|(x, _)| *x);
+        lines.dedup_by(|left, right| left.0 == right.0);
+        return lines;
     }
+
+    let grid_line_count = 8u32;
+    (0..=grid_line_count)
+        .map(|step| {
+            let x = ((step as f32 / grid_line_count as f32) * width as f32).round() as i32;
+            let tone = if step % 4 == 0 {
+                GridTone::Bar
+            } else {
+                GridTone::Subdivision
+            };
+            (x.clamp(0, width), tone)
+        })
+        .collect()
 }
 
 fn beats_per_bar(num: u16, denom: u16) -> f32 {
@@ -187,6 +219,14 @@ fn beats_per_bar(num: u16, denom: u16) -> f32 {
         _ => 4,
     } as f32;
     num.clamp(1, 32) as f32 * (4.0 / denom)
+}
+
+fn is_multiple(value: f64, period: f64, epsilon: f64) -> bool {
+    if !value.is_finite() || !period.is_finite() || period <= 0.0 {
+        return false;
+    }
+    let wrapped = value.rem_euclid(period);
+    wrapped <= epsilon || (period - wrapped) <= epsilon
 }
 
 fn palette_color(index: u32) -> Color {
@@ -222,7 +262,7 @@ mod tests {
     #[test]
     fn tempo_locked_grid_density_increases_with_triplet_subdivisions() {
         let mut state = XcopeUiState {
-            mode: ScopeMode::TempoLocked,
+            mode: crate::params::ScopeMode::TempoLocked,
             grid_subdivision: GridSubdivision::Div16,
             grid_triplet: false,
             ..XcopeUiState::default()
@@ -233,6 +273,7 @@ mod tests {
                 song_pos_beats: Some(0.0),
                 ..TransportSnapshot::default()
             },
+            320,
         );
         state.grid_triplet = true;
         let triplet = vertical_grid_lines(
@@ -241,7 +282,35 @@ mod tests {
                 song_pos_beats: Some(0.0),
                 ..TransportSnapshot::default()
             },
+            320,
         );
-        assert!(triplet > straight);
+        assert!(triplet.len() > straight.len());
+    }
+
+    #[test]
+    fn tempo_locked_grid_positions_shift_with_song_position_phase() {
+        let state = XcopeUiState {
+            mode: crate::params::ScopeMode::TempoLocked,
+            grid_subdivision: GridSubdivision::Div8,
+            time_window: crate::params::TimeWindow::OneBar,
+            ..XcopeUiState::default()
+        };
+        let at_bar = vertical_grid_lines(
+            &state,
+            TransportSnapshot {
+                song_pos_beats: Some(4.0),
+                ..TransportSnapshot::default()
+            },
+            320,
+        );
+        let quarter_beat_later = vertical_grid_lines(
+            &state,
+            TransportSnapshot {
+                song_pos_beats: Some(4.25),
+                ..TransportSnapshot::default()
+            },
+            320,
+        );
+        assert_ne!(at_bar, quarter_beat_later);
     }
 }
