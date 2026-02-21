@@ -43,6 +43,7 @@ The product is intended for producers, mixing engineers, and sound designers wor
 - Cross-instance communication
 - Spectrum or frequency-domain view
 - Correlation meters
+- Configurable per-source channel selection (for example choosing L/R/Sum per source)
 
 ---
 
@@ -131,6 +132,13 @@ Grid behavior requirements:
 ### 4.4 Multi-Channel Support
 
 The plugin must accept up to 4 channels of input.
+
+Input Representation (V1):
+
+- The scope displays four independent mono lanes (`CH1`..`CH4`).
+- Each displayed lane is treated as one mono source.
+- For now, when a routed source is stereo, the plugin uses the source's left (`L`) channel for display.
+- Right-channel or stereo summing source selection is deferred to a later version.
 
 Display Modes:
 
@@ -335,7 +343,7 @@ Xcope is considered complete when:
 
 1. It runs reliably in major Windows DAWs (e.g., Ableton Live, Bitwig, Reaper).
 2. Tempo-locked mode remains visually stable.
-3. Multi-channel overlay and split modes work correctly.
+3. Multi-channel overlay and split modes work correctly for four mono display lanes.
 4. UI scales without layout defects.
 5. CPU usage remains low.
 6. No audio artifacts are introduced.
