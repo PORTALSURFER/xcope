@@ -83,6 +83,7 @@ fn grid_mode_from_transport(
                 ui_state.grid_triplet,
             )
             .max(1),
+            start_beat: window.start_beat,
         };
     }
     WaveformGridMode::Fixed { line_count: 8 }
@@ -90,6 +91,7 @@ fn grid_mode_from_transport(
 
 /// Return Xcope-specific waveform style tokens.
 fn xcope_waveform_style() -> WaveformViewStyle {
+    let default = WaveformViewStyle::default();
     WaveformViewStyle {
         background: Color::rgb(14, 17, 20),
         grid_bar: Color::rgb(44, 50, 57),
@@ -98,6 +100,10 @@ fn xcope_waveform_style() -> WaveformViewStyle {
         grid_horizontal: Color::rgb(27, 31, 37),
         grid_horizontal_center: Color::rgb(53, 61, 69),
         lane_divider: Color::rgb(42, 48, 54),
+        waveform_body_alpha: default.waveform_body_alpha,
+        waveform_outline_alpha_inner: default.waveform_outline_alpha_inner,
+        waveform_outline_alpha_outer: default.waveform_outline_alpha_outer,
+        waveform_outline_layers: default.waveform_outline_layers,
     }
 }
 
@@ -142,7 +148,7 @@ mod tests {
     }
 
     #[test]
-    fn tempo_locked_grid_is_phase_stable() {
+    fn tempo_locked_grid_tracks_absolute_phase() {
         let state = XcopeUiState {
             mode: crate::params::ScopeMode::TempoLocked,
             grid_subdivision: crate::params::GridSubdivision::Div8,
@@ -173,7 +179,7 @@ mod tests {
             320,
             180,
         );
-        assert_eq!(at_bar, quarter_beat_later);
+        assert_ne!(at_bar, quarter_beat_later);
     }
 
     #[test]

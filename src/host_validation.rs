@@ -2,6 +2,8 @@
 
 #[cfg(test)]
 mod tests {
+    use toybox::gui::declarative::SurfaceCommand;
+
     use crate::params::{DisplayMode, ScopeMode, TimeWindow, XcopeParams, XcopeUiState};
     use crate::scope::{build_scope_surface_commands, resolve_live_frame, ScopeCaptureBuffer};
     use crate::state_io::{decode_state_payload, encode_state_payload};
@@ -148,6 +150,20 @@ mod tests {
         let commands_a = build_scope_surface_commands(&frame_a, &state, transport_a, 320, 180);
         let commands_b = build_scope_surface_commands(&frame_b, &state, transport_b, 320, 180);
 
-        assert_eq!(commands_a, commands_b);
+        assert_eq!(frame_a.samples, frame_b.samples);
+        assert_eq!(
+            waveform_foreground_commands(&commands_a),
+            waveform_foreground_commands(&commands_b)
+        );
+    }
+
+    fn waveform_foreground_commands(commands: &[SurfaceCommand]) -> Vec<SurfaceCommand> {
+        commands
+            .iter()
+            .filter(
+                |command| matches!(command, SurfaceCommand::Line { color, .. } if color.a < 255),
+            )
+            .cloned()
+            .collect()
     }
 }
