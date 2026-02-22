@@ -22,38 +22,33 @@ pub fn resolve_live_frame(
     transport: TransportSnapshot,
     sample_rate_hz: f32,
 ) -> ScopeFrame {
-    let samples = resolve_scope_window_samples(ui_state, transport, sample_rate_hz);
-    let mut frame = capture.snapshot_recent(samples);
-    align_tempo_locked_phase(&mut frame, ui_state, transport);
-    frame
+    let sample_count = resolve_scope_window_samples(ui_state, transport, sample_rate_hz);
+    let end_exclusive = resolve_window_end_sample(capture, ui_state, transport, sample_rate_hz);
+    capture.snapshot_ending_at(end_exclusive, sample_count)
 }
 
-/// Rotate tempo-locked frames so beat phase stays visually anchored.
-///
-/// We sample the most-recent window from the ring buffer, then circularly
-/// rotate that window by the current beat phase. This keeps periodic material
-/// visually stable against the musical grid instead of slowly drifting.
-fn align_tempo_locked_phase(
-    frame: &mut ScopeFrame,
+/// Resolve one absolute end-sample index for deterministic window selection.
+fn resolve_window_end_sample(
+    capture: &ScopeCaptureBuffer,
     ui_state: &XcopeUiState,
     transport: TransportSnapshot,
-) {
-    if frame.sample_count() < 2 {
-        return;
-    }
+    sample_rate_hz: f32,
+) -> u64 {
+    let fallback_end = capture.total_written_samples();
     let Some(window) = resolve_tempo_locked_window(ui_state, transport) else {
-        return;
+        return fallback_end;
     };
-    if !window.beats_visible.is_finite() || window.beats_visible <= 0.0 {
-        return;
+    let Some((anchor_sample, anchor_beats)) = capture.transport_anchor() else {
+        return fallback_end;
+    };
+    let tempo = transport.tempo_bpm.max(1.0) as f64;
+    let samples_per_beat = (sample_rate_hz.max(1.0) as f64 * 60.0) / tempo;
+    let delta_beats = anchor_beats - window.end_beat;
+    let resolved = anchor_sample as f64 - (delta_beats * samples_per_beat);
+    if !resolved.is_finite() {
+        return fallback_end;
     }
-
-    let phase_beats = window.end_beat.rem_euclid(window.beats_visible);
-    let phase_norm = (phase_beats / window.beats_visible).clamp(0.0, 1.0);
-    let shift = ((phase_norm * frame.sample_count() as f64) as usize) % frame.sample_count();
-    if shift > 0 {
-        frame.samples.rotate_right(shift);
-    }
+    resolved.round().max(0.0) as u64
 }
 
 #[cfg(test)]
@@ -77,36 +72,83 @@ mod tests {
     }
 
     #[test]
-    fn tempo_locked_frame_rotation_tracks_beat_phase() {
-        let capture = ScopeCaptureBuffer::new(32);
-        for value in 0..16 {
+    fn tempo_locked_window_reads_anchored_absolute_sample_range() {
+        let capture = ScopeCaptureBuffer::new(1024);
+        for value in 0..640 {
             capture.write_sample([value as f32, 0.0], 1);
         }
+        capture.set_transport_anchor(Some(16.0));
 
         let state = tempo_locked_state();
+        let expected_samples = resolve_scope_window_samples(
+            &state,
+            TransportSnapshot {
+                tempo_bpm: 120.0,
+                song_pos_beats: Some(12.0),
+                ..TransportSnapshot::default()
+            },
+            48.0,
+        );
+        assert_eq!(expected_samples, 96);
         let at_bar = resolve_live_frame(
             &capture,
             &state,
             TransportSnapshot {
-                song_pos_beats: Some(4.0),
+                tempo_bpm: 120.0,
+                song_pos_beats: Some(12.0),
+                ..TransportSnapshot::default()
+            },
+            48.0,
+        );
+        let one_beat_earlier = resolve_live_frame(
+            &capture,
+            &state,
+            TransportSnapshot {
+                tempo_bpm: 120.0,
+                song_pos_beats: Some(11.0),
+                ..TransportSnapshot::default()
+            },
+            48.0,
+        );
+
+        assert_eq!(at_bar.sample_count(), 96);
+        assert_eq!(one_beat_earlier.sample_count(), 96);
+        assert_eq!(at_bar.sample(0, 0), 448.0);
+        assert_eq!(at_bar.sample(0, 95), 543.0);
+        assert_eq!(one_beat_earlier.sample(0, 0), 424.0);
+        assert_eq!(one_beat_earlier.sample(0, 95), 519.0);
+    }
+
+    #[test]
+    fn sub_sample_transport_shift_does_not_force_pixel_window_jump() {
+        let capture = ScopeCaptureBuffer::new(64);
+        for value in 0..32 {
+            capture.write_sample([value as f32, 0.0], 1);
+        }
+        capture.set_transport_anchor(Some(8.0));
+        let state = tempo_locked_state();
+
+        let a = resolve_live_frame(
+            &capture,
+            &state,
+            TransportSnapshot {
+                tempo_bpm: 120.0,
+                song_pos_beats: Some(4.00),
                 ..TransportSnapshot::default()
             },
             8.0,
         );
-        let half_bar_later = resolve_live_frame(
+        let b = resolve_live_frame(
             &capture,
             &state,
             TransportSnapshot {
-                song_pos_beats: Some(6.0),
+                tempo_bpm: 120.0,
+                song_pos_beats: Some(3.95),
                 ..TransportSnapshot::default()
             },
             8.0,
         );
 
-        assert_eq!(at_bar.sample_count(), 16);
-        assert_eq!(half_bar_later.sample_count(), 16);
-        assert_eq!(at_bar.sample(0, 0), 0.0);
-        assert_eq!(half_bar_later.sample(0, 0), 8.0);
-        assert_eq!(half_bar_later.sample(0, 8), 0.0);
+        assert_eq!(a.samples, b.samples);
     }
 }

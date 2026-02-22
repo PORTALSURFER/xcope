@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::params::{DisplayMode, ScopeMode, TimeWindow, XcopeParams, XcopeUiState};
+    use crate::scope::{build_scope_surface_commands, resolve_live_frame, ScopeCaptureBuffer};
     use crate::state_io::{decode_state_payload, encode_state_payload};
     use crate::transport::{
         project_song_position_beats, resolve_tempo_locked_window, resolve_visible_sample_count,
@@ -113,5 +114,40 @@ mod tests {
         decode_state_payload(&reloaded, &payload).expect("saved state should decode");
 
         assert_eq!(reloaded.snapshot(), source.snapshot());
+    }
+
+    #[test]
+    fn stable_signal_render_is_unchanged_for_sub_sample_transport_shift() {
+        let capture = ScopeCaptureBuffer::new(512);
+        for index in 0..256 {
+            let sample = ((index as f32) * 0.2).sin();
+            capture.write_sample([sample, 0.0], 1);
+        }
+        capture.set_transport_anchor(Some(32.0));
+
+        let state = XcopeUiState {
+            mode: ScopeMode::TempoLocked,
+            time_window: TimeWindow::OneBar,
+            display_mode: DisplayMode::Overlay,
+            ..XcopeUiState::default()
+        };
+        let transport_a = TransportSnapshot {
+            tempo_bpm: 120.0,
+            is_playing: true,
+            song_pos_beats: Some(28.0),
+            time_sig_num: 4,
+            time_sig_denom: 4,
+        };
+        let transport_b = TransportSnapshot {
+            song_pos_beats: Some(27.95),
+            ..transport_a
+        };
+
+        let frame_a = resolve_live_frame(&capture, &state, transport_a, 8.0);
+        let frame_b = resolve_live_frame(&capture, &state, transport_b, 8.0);
+        let commands_a = build_scope_surface_commands(&frame_a, &state, transport_a, 320, 180);
+        let commands_b = build_scope_surface_commands(&frame_b, &state, transport_b, 320, 180);
+
+        assert_eq!(commands_a, commands_b);
     }
 }

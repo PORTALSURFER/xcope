@@ -301,9 +301,13 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
             self.shared.sample_rate_hz(),
             previous_transport,
         ));
+        let transport_snapshot = self.shared.transport.snapshot();
 
         if data.numSamples <= 0 || data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
         {
+            self.shared
+                .scope_buffer
+                .set_transport_anchor(transport_snapshot.song_pos_beats);
             return process_ok();
         }
 
@@ -343,6 +347,9 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
                 .scope_buffer
                 .write_sample(capture_sample, active_sources.max(1));
         }
+        self.shared
+            .scope_buffer
+            .set_transport_anchor(transport_snapshot.song_pos_beats);
 
         process_ok()
     }

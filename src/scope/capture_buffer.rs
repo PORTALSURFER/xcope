@@ -4,6 +4,8 @@ use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use crate::constants::MAX_VISUAL_CHANNELS;
 
+const NONE_BEATS_SENTINEL: u64 = u64::MAX;
+
 /// One immutable snapshot of captured scope samples.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ScopeFrame {
@@ -36,6 +38,8 @@ pub struct ScopeCaptureBuffer {
     write_cursor: AtomicUsize,
     total_written: AtomicU64,
     last_channel_count: AtomicUsize,
+    transport_anchor_sample: AtomicU64,
+    transport_anchor_beats_bits: AtomicU64,
 }
 
 impl ScopeCaptureBuffer {
@@ -49,6 +53,8 @@ impl ScopeCaptureBuffer {
             write_cursor: AtomicUsize::new(0),
             total_written: AtomicU64::new(0),
             last_channel_count: AtomicUsize::new(0),
+            transport_anchor_sample: AtomicU64::new(0),
+            transport_anchor_beats_bits: AtomicU64::new(NONE_BEATS_SENTINEL),
         }
     }
 
@@ -112,23 +118,39 @@ impl ScopeCaptureBuffer {
 
     /// Return a chronological snapshot of the most recent sample frames.
     pub fn snapshot_recent(&self, requested_frames: usize) -> ScopeFrame {
-        let available = self.total_written.load(Ordering::Acquire) as usize;
-        let frame_count = requested_frames.min(available).min(self.capacity);
+        let end_exclusive = self.total_written.load(Ordering::Acquire);
+        self.snapshot_ending_at(end_exclusive, requested_frames)
+    }
+
+    /// Return one chronological snapshot ending at `end_exclusive`.
+    ///
+    /// `end_exclusive` uses absolute sample indexing in the capture timeline.
+    pub(crate) fn snapshot_ending_at(
+        &self,
+        end_exclusive: u64,
+        requested_frames: usize,
+    ) -> ScopeFrame {
+        let available = self.total_written.load(Ordering::Acquire);
+        let earliest_available = available.saturating_sub(self.capacity as u64);
+        let end = end_exclusive.clamp(earliest_available, available);
+        let start = end
+            .saturating_sub(requested_frames.min(self.capacity) as u64)
+            .max(earliest_available);
         let channel_count = self
             .last_channel_count
             .load(Ordering::Relaxed)
             .clamp(0, MAX_VISUAL_CHANNELS);
-        if frame_count == 0 || channel_count == 0 {
+        if start >= end || channel_count == 0 {
             return ScopeFrame {
                 channel_count,
                 samples: Vec::new(),
             };
         }
 
-        let start_absolute = available.saturating_sub(frame_count);
+        let frame_count = (end - start) as usize;
         let mut samples = Vec::with_capacity(frame_count);
-        for absolute_index in start_absolute..available {
-            let ring_index = absolute_index % self.capacity;
+        for absolute_index in start..end {
+            let ring_index = (absolute_index as usize) % self.capacity;
             let mut frame = [0.0f32; MAX_VISUAL_CHANNELS];
             for (channel_index, value) in frame.iter_mut().enumerate() {
                 *value = self.load_sample(ring_index, channel_index);
@@ -140,6 +162,40 @@ impl ScopeCaptureBuffer {
             channel_count,
             samples,
         }
+    }
+
+    /// Return total number of captured samples ever written.
+    pub(crate) fn total_written_samples(&self) -> u64 {
+        self.total_written.load(Ordering::Acquire)
+    }
+
+    /// Update the transport anchor used for deterministic scope window lookup.
+    ///
+    /// The anchor pairs the current absolute sample index with host song-position
+    /// beats captured from the process context.
+    #[cfg(any(feature = "vst3", test))]
+    pub(crate) fn set_transport_anchor(&self, song_pos_beats: Option<f64>) {
+        let sample = self.total_written.load(Ordering::Acquire);
+        self.transport_anchor_sample
+            .store(sample, Ordering::Release);
+        let beats_bits = song_pos_beats
+            .filter(|value| value.is_finite())
+            .map(f64::to_bits)
+            .unwrap_or(NONE_BEATS_SENTINEL);
+        self.transport_anchor_beats_bits
+            .store(beats_bits, Ordering::Release);
+    }
+
+    /// Return the latest transport anchor as `(sample_index, song_pos_beats)`.
+    pub(crate) fn transport_anchor(&self) -> Option<(u64, f64)> {
+        let beats_bits = self.transport_anchor_beats_bits.load(Ordering::Acquire);
+        if beats_bits == NONE_BEATS_SENTINEL {
+            return None;
+        }
+        Some((
+            self.transport_anchor_sample.load(Ordering::Acquire),
+            f64::from_bits(beats_bits),
+        ))
     }
 
     fn storage_index(&self, frame_index: usize, channel_index: usize) -> usize {
@@ -189,5 +245,30 @@ mod tests {
         assert_eq!(snapshot.sample_count(), 4);
         assert_eq!(snapshot.sample(0, 0), 2.0);
         assert_eq!(snapshot.sample(0, 3), 5.0);
+    }
+
+    #[test]
+    fn snapshot_ending_at_reads_absolute_window() {
+        let buffer = ScopeCaptureBuffer::new(8);
+        let ch0 = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0];
+        buffer.write_block(&[&ch0], 6);
+
+        let snapshot = buffer.snapshot_ending_at(5, 3);
+        assert_eq!(snapshot.sample_count(), 3);
+        assert_eq!(snapshot.sample(0, 0), 2.0);
+        assert_eq!(snapshot.sample(0, 1), 3.0);
+        assert_eq!(snapshot.sample(0, 2), 4.0);
+    }
+
+    #[test]
+    fn transport_anchor_roundtrip_reports_latest_sample_and_beats() {
+        let buffer = ScopeCaptureBuffer::new(8);
+        let ch0 = [0.0, 1.0, 2.0, 3.0];
+        buffer.write_block(&[&ch0], 4);
+        buffer.set_transport_anchor(Some(12.5));
+
+        let anchor = buffer.transport_anchor().expect("anchor should exist");
+        assert_eq!(anchor.0, 4);
+        assert!((anchor.1 - 12.5).abs() < 1.0e-9);
     }
 }
