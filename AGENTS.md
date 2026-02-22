@@ -23,3 +23,10 @@ This file is a stateless wake-up portal. Keep it short and explicit.
 - Keep this file as a portal, not a knowledge base.
 - Put all detailed plans and technical notes under `docs/`.
 - Remove stale instructions instead of appending exceptions.
+
+## Core Framework Boundary
+
+- Keep reusable framework-level features in `toybox` whenever they can serve multiple plugins.
+- Keep `xcope` focused on plugin-specific behavior only (plugin widgets, DSP, and product-specific UX/workflows).
+- Do not modify `toybox` from this workspace under any circumstance.
+- When a task requires reusable framework work, write a clear implementation request for toybox developers and hand it off to the user.
