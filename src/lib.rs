@@ -8,6 +8,8 @@ use std::sync::Arc;
 
 pub mod constants;
 pub mod gui;
+#[cfg(test)]
+mod host_validation;
 pub mod params;
 pub mod scope;
 pub mod state_io;

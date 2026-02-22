@@ -179,6 +179,24 @@ pub fn resolve_tempo_locked_window(
     })
 }
 
+/// Project song position in beat units forward by one processing block.
+///
+/// This is used to mirror host transport progression when a process callback
+/// reports `projectTimeMusic` at block start.
+pub fn project_song_position_beats(
+    base_beats: f64,
+    tempo_bpm: f32,
+    is_playing: bool,
+    block_samples: i32,
+    sample_rate_hz: f32,
+) -> f64 {
+    if !is_playing || block_samples <= 0 || sample_rate_hz <= 1.0 {
+        return base_beats;
+    }
+    base_beats
+        + (block_samples as f64 * (sanitize_tempo(tempo_bpm) as f64 / 60.0) / sample_rate_hz as f64)
+}
+
 fn free_running_window_samples(window: TimeWindow, sample_rate: f32) -> usize {
     let seconds = match window {
         TimeWindow::OneBeat => 0.25,

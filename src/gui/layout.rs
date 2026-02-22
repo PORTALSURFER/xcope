@@ -45,17 +45,56 @@ pub const TOOLBAR_HEIGHT: u32 = 84;
 pub const BOTTOM_BAR_HEIGHT: u32 = 96;
 /// Scope region fixed design-space height.
 pub const SCOPE_HEIGHT: u32 = WINDOW_HEIGHT - TOOLBAR_HEIGHT - BOTTOM_BAR_HEIGHT;
+const TOTAL_VERTICAL_WEIGHT: u32 = TOOLBAR_HEIGHT + SCOPE_HEIGHT + BOTTOM_BAR_HEIGHT;
+
+/// Runtime-resolved layout geometry for the current editor size.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LayoutGeometry {
+    /// Root editor size in pixels.
+    pub root_size: Size,
+    /// Toolbar region height in pixels.
+    pub toolbar_height: u32,
+    /// Scope surface region height in pixels.
+    pub scope_height: u32,
+    /// Bottom control-bar region height in pixels.
+    pub bottom_bar_height: u32,
+}
+
+/// Resolve runtime layout geometry from one host-provided window size.
+pub fn resolve_layout_geometry(window_size: Size) -> LayoutGeometry {
+    let root_size = Size {
+        width: window_size.width.max(WINDOW_WIDTH),
+        height: window_size.height.max(WINDOW_HEIGHT),
+    };
+    let toolbar_height = proportional_height(root_size.height, TOOLBAR_HEIGHT).max(1);
+    let bottom_bar_height = proportional_height(root_size.height, BOTTOM_BAR_HEIGHT).max(1);
+    let reserved = toolbar_height
+        .saturating_add(bottom_bar_height)
+        .min(root_size.height.saturating_sub(1));
+    let scope_height = root_size.height.saturating_sub(reserved).max(1);
+
+    LayoutGeometry {
+        root_size,
+        toolbar_height,
+        scope_height,
+        bottom_bar_height,
+    }
+}
 
 /// Build one full UI spec from state and rendered scope commands.
-pub fn build_ui_spec(snapshot: &XcopeUiState, scope_commands: Vec<SurfaceCommand>) -> UiSpec {
+pub fn build_ui_spec(
+    snapshot: &XcopeUiState,
+    scope_commands: Vec<SurfaceCommand>,
+    geometry: LayoutGeometry,
+) -> UiSpec {
     let toolbar = panel("toolbar", toolbar_row(snapshot));
     let scope = panel(
         "scope-panel",
         surface(
             SCOPE_SURFACE_KEY,
             Size {
-                width: WINDOW_WIDTH,
-                height: SCOPE_HEIGHT,
+                width: geometry.root_size.width,
+                height: geometry.scope_height,
             },
             scope_commands,
         )
@@ -64,19 +103,20 @@ pub fn build_ui_spec(snapshot: &XcopeUiState, scope_commands: Vec<SurfaceCommand
     let bottom = panel("bottom-bar", bottom_row(snapshot));
 
     let content = column_slots(vec![
-        weighted_slot(toolbar, TOOLBAR_HEIGHT as u16),
-        weighted_slot(scope, SCOPE_HEIGHT as u16),
-        weighted_slot(bottom, BOTTOM_BAR_HEIGHT as u16),
+        weighted_slot(toolbar, slot_weight(geometry.toolbar_height)),
+        weighted_slot(scope, slot_weight(geometry.scope_height)),
+        weighted_slot(bottom, slot_weight(geometry.bottom_bar_height)),
     ]);
 
-    UiSpec::new(root_frame_sized(
-        ROOT_KEY,
-        content,
-        Size {
-            width: WINDOW_WIDTH,
-            height: WINDOW_HEIGHT,
-        },
-    ))
+    UiSpec::new(root_frame_sized(ROOT_KEY, content, geometry.root_size))
+}
+
+fn proportional_height(total_height: u32, weight: u32) -> u32 {
+    ((total_height as u64).saturating_mul(weight as u64) / TOTAL_VERTICAL_WEIGHT as u64) as u32
+}
+
+fn slot_weight(height: u32) -> u16 {
+    height.clamp(1, u16::MAX as u32) as u16
 }
 
 fn toolbar_row(snapshot: &XcopeUiState) -> Node {
@@ -254,11 +294,23 @@ mod tests {
     use toybox::gui::declarative::measure_checked;
 
     #[test]
-    fn build_ui_spec_uses_fixed_root_size() {
-        let spec = build_ui_spec(&XcopeUiState::default(), Vec::new());
+    fn build_ui_spec_uses_resolved_root_size() {
+        let geometry = resolve_layout_geometry(Size {
+            width: 1200,
+            height: 700,
+        });
+        let spec = build_ui_spec(&XcopeUiState::default(), Vec::new(), geometry);
         let layout = spec.root.layout;
-        assert_eq!(layout.min_width(), Some(WINDOW_WIDTH));
-        assert_eq!(layout.min_height(), Some(WINDOW_HEIGHT));
+        assert_eq!(layout.min_width(), Some(1200));
+        assert_eq!(layout.min_height(), Some(700));
+    }
+
+    #[test]
+    fn resolve_layout_geometry_clamps_to_minimum_window_size() {
+        let geometry = resolve_layout_geometry(Size::default());
+        assert_eq!(geometry.root_size.width, WINDOW_WIDTH);
+        assert_eq!(geometry.root_size.height, WINDOW_HEIGHT);
+        assert!(geometry.scope_height > 0);
     }
 
     #[test]
@@ -302,7 +354,14 @@ mod tests {
 
     #[test]
     fn emitted_ui_spec_passes_strict_slot_validation() {
-        let spec = build_ui_spec(&XcopeUiState::default(), Vec::new());
+        let spec = build_ui_spec(
+            &XcopeUiState::default(),
+            Vec::new(),
+            resolve_layout_geometry(Size {
+                width: WINDOW_WIDTH,
+                height: WINDOW_HEIGHT,
+            }),
+        );
         measure_checked(&spec).expect("emitted tree must pass strict declarative validation");
     }
 }

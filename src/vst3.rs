@@ -15,7 +15,7 @@ use crate::constants::{ParamId, MAX_VISUAL_CHANNELS, PLUGIN_NAME, STATE_MAGIC, S
 use crate::gui::{preferred_window_size, XcopeGui};
 use crate::params::{apply_param_normalized, param_count, read_param_normalized};
 use crate::state_io::{decode_state_payload, encode_state_payload};
-use crate::transport::TransportSnapshot;
+use crate::transport::{project_song_position_beats, TransportSnapshot};
 use crate::XcopeShared;
 
 const PROCESSOR_CID: TUID = uid(0x9AF47871, 0x00A645F3, 0x9D8A34AA, 0x7D4E7821);
@@ -838,13 +838,18 @@ fn transport_from_context(
         (flags & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kPlaying)) != 0;
     let song_pos_beats = if pos_valid {
         let base = ctx.projectTimeMusic;
-        let can_advance = is_playing && tempo_valid && num_samples > 0 && sample_rate_hz > 1.0;
-        if can_advance {
-            let advanced = base + (num_samples as f64 * (ctx.tempo / 60.0) / sample_rate_hz as f64);
-            Some(advanced)
+        let tempo = if tempo_valid {
+            ctx.tempo as f32
         } else {
-            Some(base)
-        }
+            previous.tempo_bpm
+        };
+        Some(project_song_position_beats(
+            base,
+            tempo,
+            is_playing && tempo_valid,
+            num_samples,
+            sample_rate_hz,
+        ))
     } else {
         previous.song_pos_beats
     };

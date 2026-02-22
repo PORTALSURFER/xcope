@@ -13,6 +13,7 @@ use toybox::clack_extensions::gui::{GuiSize, Window};
 use toybox::clack_plugin::plugin::PluginError;
 use toybox::clap::gui::{GuiHostWindow, GuiOpenRequest, InputState};
 use toybox::gui::declarative::{UiAction, UiSpec};
+use toybox::gui::Size;
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
 use crate::constants::{WINDOW_HEIGHT, WINDOW_WIDTH};
@@ -113,6 +114,7 @@ struct GuiRuntime {
     last_live_frame: ScopeFrame,
     cached_ui_spec: Option<UiSpec>,
     last_ui_build_at: Option<Instant>,
+    last_window_size: Option<Size>,
     ui_dirty: bool,
 }
 
@@ -124,9 +126,10 @@ impl GuiState {
         }
     }
 
-    fn build_ui(&self, _input: &InputState) -> toybox::gui::declarative::UiSpec {
+    fn build_ui(&self, input: &InputState) -> toybox::gui::declarative::UiSpec {
+        let geometry = layout::resolve_layout_geometry(input.window_size);
         let now = Instant::now();
-        if let Some(spec) = self.try_take_cached_ui_spec(now) {
+        if let Some(spec) = self.try_take_cached_ui_spec(now, geometry.root_size) {
             return spec;
         }
 
@@ -160,19 +163,22 @@ impl GuiState {
             &frame,
             &snapshot,
             transport,
-            WINDOW_WIDTH,
-            layout::SCOPE_HEIGHT,
+            geometry.root_size.width,
+            geometry.scope_height,
         );
-        let spec = layout::build_ui_spec(&snapshot, commands);
-        self.cache_ui_spec(now, &spec);
+        let spec = layout::build_ui_spec(&snapshot, commands, geometry);
+        self.cache_ui_spec(now, geometry.root_size, &spec);
         spec
     }
 
-    fn try_take_cached_ui_spec(&self, now: Instant) -> Option<UiSpec> {
+    fn try_take_cached_ui_spec(&self, now: Instant, window_size: Size) -> Option<UiSpec> {
         let Ok(runtime) = self.runtime.lock() else {
             return None;
         };
         if runtime.ui_dirty {
+            return None;
+        }
+        if runtime.last_window_size != Some(window_size) {
             return None;
         }
         let built_at = runtime.last_ui_build_at?;
@@ -182,12 +188,13 @@ impl GuiState {
         None
     }
 
-    fn cache_ui_spec(&self, now: Instant, spec: &UiSpec) {
+    fn cache_ui_spec(&self, now: Instant, window_size: Size, spec: &UiSpec) {
         let Ok(mut runtime) = self.runtime.lock() else {
             return;
         };
         runtime.cached_ui_spec = Some(spec.clone());
         runtime.last_ui_build_at = Some(now);
+        runtime.last_window_size = Some(window_size);
         runtime.ui_dirty = false;
     }
 
@@ -200,6 +207,7 @@ impl GuiState {
         runtime.ui_dirty = true;
         runtime.cached_ui_spec = None;
         runtime.last_ui_build_at = None;
+        runtime.last_window_size = None;
         if snapshot.freeze {
             if (freeze_changed || runtime.frozen_frame.is_none())
                 && runtime.last_live_frame.sample_count() > 0
