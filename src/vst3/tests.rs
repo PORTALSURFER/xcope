@@ -1,6 +1,6 @@
 //! VST3 unit tests focused on bus arrangement and defaults.
 
-use toybox::vst3::prelude::Steinberg::SpeakerArr;
+use toybox::vst3::prelude::SpeakerArr;
 
 use super::bus::{is_supported_bus_arrangement, AtomicBusConfiguration, BusChannelLayout};
 
