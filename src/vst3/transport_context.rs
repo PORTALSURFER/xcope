@@ -158,4 +158,127 @@ mod tests {
                 .expect("anchor beats should reuse previous");
         assert!((beats - 20.0).abs() < 1.0e-9);
     }
+
+    #[test]
+    fn anchor_beats_stays_phase_locked_under_mixed_host_reference_points() {
+        let sample_rate_hz = 48_000.0;
+        let tempo_bpm = 120.0;
+        let block_samples = 480;
+        let samples_per_beat = (sample_rate_hz * 60.0) / tempo_bpm;
+        let block_beats = block_samples as f64 / samples_per_beat as f64;
+
+        let mut previous_anchor: Option<(u64, f64)> = None;
+        let mut anchor_sample = 0u64;
+
+        for index in 0..128u64 {
+            anchor_sample += block_samples as u64;
+            let expected_end = (index + 1) as f64 * block_beats;
+            let host_reports_end = index % 2 == 1;
+            let reported = if host_reports_end {
+                expected_end
+            } else {
+                expected_end - block_beats
+            };
+            let jitter = match index % 3 {
+                0 => 1.0e-7,
+                1 => -1.0e-7,
+                _ => 0.0,
+            };
+
+            let mut ctx = context_with_music(reported + jitter, true);
+            let resolved = resolve_end_of_block_anchor_beats(
+                &mut ctx,
+                block_samples,
+                sample_rate_hz,
+                tempo_bpm,
+                previous_anchor,
+                anchor_sample,
+            )
+            .expect("anchor beats should resolve");
+
+            assert!(
+                (resolved - expected_end).abs() < 1.0e-4,
+                "block {index}: expected {expected_end}, got {resolved}"
+            );
+
+            if let Some((previous_sample, previous_beats)) = previous_anchor {
+                let delta_samples = (anchor_sample - previous_sample) as f64;
+                let delta_beats = delta_samples / samples_per_beat as f64;
+                assert!(
+                    (resolved - (previous_beats + delta_beats)).abs() < 1.0e-4,
+                    "block {index}: progression mismatch"
+                );
+            }
+
+            previous_anchor = Some((anchor_sample, resolved));
+        }
+    }
+
+    #[test]
+    fn anchor_beats_recovers_after_temporarily_missing_position_flags() {
+        let sample_rate_hz = 48_000.0;
+        let tempo_bpm = 120.0;
+        let block_samples = 480;
+        let samples_per_beat = (sample_rate_hz * 60.0) / tempo_bpm;
+        let block_beats = block_samples as f64 / samples_per_beat as f64;
+
+        let mut previous_anchor: Option<(u64, f64)> = None;
+        let mut anchor_sample = 0u64;
+        let mut expected_end = 0.0f64;
+
+        // Warm-up with valid position.
+        for _ in 0..8 {
+            anchor_sample += block_samples as u64;
+            expected_end += block_beats;
+            let mut ctx = context_with_music(expected_end - block_beats, true);
+            let resolved = resolve_end_of_block_anchor_beats(
+                &mut ctx,
+                block_samples,
+                sample_rate_hz,
+                tempo_bpm,
+                previous_anchor,
+                anchor_sample,
+            )
+            .expect("anchor beats should resolve");
+            previous_anchor = Some((anchor_sample, resolved));
+        }
+
+        // Simulate host blocks where position is temporarily unavailable.
+        for _ in 0..4 {
+            anchor_sample += block_samples as u64;
+            expected_end += block_beats;
+            let mut ctx = context_with_music(0.0, false);
+            let resolved = resolve_end_of_block_anchor_beats(
+                &mut ctx,
+                block_samples,
+                sample_rate_hz,
+                tempo_bpm,
+                previous_anchor,
+                anchor_sample,
+            )
+            .expect("fallback to previous anchor should resolve");
+            previous_anchor = Some((anchor_sample, resolved));
+        }
+
+        // When valid position returns, anchor should quickly re-lock.
+        for _ in 0..8 {
+            anchor_sample += block_samples as u64;
+            expected_end += block_beats;
+            let mut ctx = context_with_music(expected_end - block_beats, true);
+            let resolved = resolve_end_of_block_anchor_beats(
+                &mut ctx,
+                block_samples,
+                sample_rate_hz,
+                tempo_bpm,
+                previous_anchor,
+                anchor_sample,
+            )
+            .expect("anchor beats should resolve");
+            assert!(
+                (resolved - expected_end).abs() < block_beats * 1.1,
+                "expected relock near {expected_end}, got {resolved}"
+            );
+            previous_anchor = Some((anchor_sample, resolved));
+        }
+    }
 }
