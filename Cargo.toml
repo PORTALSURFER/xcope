@@ -17,4 +17,4 @@ vst3 = ["toybox/vst3"]
 screenshot-test = ["toybox/screenshot-test"]
 
 [dependencies]
-toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "862c1fdd424e92e621603a33ddd2e77c6b4978f6", features = ["gui"] }
+toybox = { git = "https://github.com/PORTALSURFER/toybox.git", rev = "d7a4b53c40d69cb7ed835c993bcc6ab8b569fcbc", features = ["gui"] }
