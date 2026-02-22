@@ -17,7 +17,7 @@ use toybox::gui::Size;
 use toybox::raw_window_handle::{HasRawWindowHandle, RawWindowHandle};
 
 use crate::constants::{WINDOW_HEIGHT, WINDOW_WIDTH};
-use crate::scope::{build_scope_surface_commands, resolve_live_frame, ScopeFrame};
+use crate::scope::{build_scope_surface_commands, resolve_live_view, ScopeFrame};
 use crate::XcopeShared;
 
 /// Frame pacing target for expensive scope frame rebuilds.
@@ -136,12 +136,14 @@ impl GuiState {
         let snapshot = self.shared.params.snapshot();
         let transport = self.shared.transport.snapshot();
         let sample_rate = self.shared.sample_rate_hz();
-        let live_frame = resolve_live_frame(
+        let resolved_view = resolve_live_view(
             self.shared.scope_buffer.as_ref(),
             &snapshot,
             transport,
             sample_rate,
         );
+        let live_frame = resolved_view.frame;
+        let render_transport = resolved_view.render_transport;
         let frame = if let Ok(mut runtime) = self.runtime.lock() {
             runtime.last_live_frame = live_frame.clone();
             if snapshot.freeze {
@@ -162,7 +164,7 @@ impl GuiState {
         let commands = build_scope_surface_commands(
             &frame,
             &snapshot,
-            transport,
+            render_transport,
             geometry.root_size.width,
             geometry.scope_height,
         );
