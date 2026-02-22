@@ -16,7 +16,7 @@ use super::audio_io::{
 };
 use super::bus::{is_supported_bus_arrangement, AtomicBusConfiguration, BusChannelLayout};
 use super::shared_registry::{release_shared_for_role, SharedRole};
-use super::transport_context::transport_from_context;
+use super::transport_context::{resolve_end_of_block_anchor_beats, transport_from_context};
 use super::{vst3_bus_flag, vst3_process_requirement_flag, CONTROLLER_CID, INPUT_SOURCE_BUS_COUNT};
 
 pub(super) struct XcopeVst3Processor {
@@ -305,9 +305,17 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
 
         if data.numSamples <= 0 || data.symbolicSampleSize != SymbolicSampleSizes_::kSample32 as i32
         {
-            self.shared
-                .scope_buffer
-                .set_transport_anchor(transport_snapshot.song_pos_beats);
+            let anchor_sample = self.shared.scope_buffer.total_written_samples();
+            let previous_anchor = self.shared.scope_buffer.transport_anchor();
+            let anchor_beats = resolve_end_of_block_anchor_beats(
+                data.processContext,
+                data.numSamples,
+                self.shared.sample_rate_hz(),
+                transport_snapshot.tempo_bpm,
+                previous_anchor,
+                anchor_sample,
+            );
+            self.shared.scope_buffer.set_transport_anchor(anchor_beats);
             return process_ok();
         }
 
@@ -347,9 +355,17 @@ impl IAudioProcessorTrait for XcopeVst3Processor {
                 .scope_buffer
                 .write_sample(capture_sample, active_sources.max(1));
         }
-        self.shared
-            .scope_buffer
-            .set_transport_anchor(transport_snapshot.song_pos_beats);
+        let anchor_sample = self.shared.scope_buffer.total_written_samples();
+        let previous_anchor = self.shared.scope_buffer.transport_anchor();
+        let anchor_beats = resolve_end_of_block_anchor_beats(
+            data.processContext,
+            data.numSamples,
+            self.shared.sample_rate_hz(),
+            transport_snapshot.tempo_bpm,
+            previous_anchor,
+            anchor_sample,
+        );
+        self.shared.scope_buffer.set_transport_anchor(anchor_beats);
 
         process_ok()
     }

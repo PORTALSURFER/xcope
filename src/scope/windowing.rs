@@ -45,7 +45,7 @@ pub fn resolve_live_view(
     sample_rate_hz: f32,
 ) -> ResolvedScopeView {
     let sample_count = resolve_scope_window_samples(ui_state, transport, sample_rate_hz);
-    let alignment = resolve_window_alignment(capture, ui_state, transport, sample_rate_hz);
+    let alignment = resolve_window_alignment(capture, ui_state, transport);
     let frame = capture.snapshot_ending_at(alignment.end_exclusive, sample_count);
     let mut render_transport = transport;
     if let Some(song_pos_beats) = alignment.aligned_song_pos_beats {
@@ -69,51 +69,26 @@ fn resolve_window_alignment(
     capture: &ScopeCaptureBuffer,
     ui_state: &XcopeUiState,
     transport: TransportSnapshot,
-    sample_rate_hz: f32,
 ) -> WindowAlignment {
     let fallback_end = capture.total_written_samples();
-    let Some(window) = resolve_tempo_locked_window(ui_state, transport) else {
+    let Some(_window) = resolve_tempo_locked_window(ui_state, transport) else {
         return WindowAlignment {
             end_exclusive: fallback_end,
             aligned_song_pos_beats: None,
         };
     };
+
+    // Anchor-first policy: render window and grid phase are both derived from
+    // the exact audio-thread anchor to avoid GUI-thread transport jitter.
     let Some((anchor_sample, anchor_beats)) = capture.transport_anchor() else {
         return WindowAlignment {
             end_exclusive: fallback_end,
             aligned_song_pos_beats: None,
         };
     };
-    let tempo = transport.tempo_bpm.max(1.0) as f64;
-    let samples_per_beat = (sample_rate_hz.max(1.0) as f64 * 60.0) / tempo;
-    if !samples_per_beat.is_finite() || samples_per_beat <= 0.0 {
-        return WindowAlignment {
-            end_exclusive: fallback_end,
-            aligned_song_pos_beats: None,
-        };
-    }
-    let delta_beats = anchor_beats - window.end_beat;
-    let delta_samples = delta_beats * samples_per_beat;
-    // Ignore sub-sample transport deltas so UI polling jitter does not force
-    // a one-sample window jump in tempo-locked mode.
-    let resolved = if delta_samples.abs() < 1.0 {
-        anchor_sample as f64
-    } else {
-        anchor_sample as f64 - delta_samples
-    };
-    if !resolved.is_finite() {
-        return WindowAlignment {
-            end_exclusive: fallback_end,
-            aligned_song_pos_beats: None,
-        };
-    }
-    let end_exclusive = resolved.round().max(0.0) as u64;
-    let beat_offset = (end_exclusive as f64 - anchor_sample as f64) / samples_per_beat;
-    let aligned_song_pos_beats = Some(anchor_beats + beat_offset);
-
     WindowAlignment {
-        end_exclusive,
-        aligned_song_pos_beats,
+        end_exclusive: anchor_sample,
+        aligned_song_pos_beats: Some(anchor_beats),
     }
 }
 
@@ -138,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn tempo_locked_window_reads_anchored_absolute_sample_range() {
+    fn tempo_locked_window_uses_latest_anchor_sample_for_render_alignment() {
         let capture = ScopeCaptureBuffer::new(1024);
         for value in 0..640 {
             capture.write_sample([value as f32, 0.0], 1);
@@ -179,10 +154,10 @@ mod tests {
 
         assert_eq!(at_bar.sample_count(), 96);
         assert_eq!(one_beat_earlier.sample_count(), 96);
-        assert_eq!(at_bar.sample(0, 0), 448.0);
-        assert_eq!(at_bar.sample(0, 95), 543.0);
-        assert_eq!(one_beat_earlier.sample(0, 0), 424.0);
-        assert_eq!(one_beat_earlier.sample(0, 95), 519.0);
+        assert_eq!(at_bar.sample(0, 0), 544.0);
+        assert_eq!(at_bar.sample(0, 95), 639.0);
+        assert_eq!(one_beat_earlier.sample(0, 0), 544.0);
+        assert_eq!(one_beat_earlier.sample(0, 95), 639.0);
     }
 
     #[test]
