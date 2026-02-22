@@ -27,6 +27,7 @@ This file is a stateless wake-up portal. Keep it short and explicit.
 ## Core Framework Boundary
 
 - Keep reusable framework-level features in `toybox` whenever they can serve multiple plugins.
-- Keep `xcope` focused on plugin-specific behavior only (plugin widgets, DSP, and product-specific UX/workflows).
+- Keep `xcope` focused on behavior that is absolutely specific to this plugin and has no reasonable reuse path in other plugins.
+- Treat plugin widgets and DSP the same way: if a widget, DSP feature, or related UX/workflow can reasonably be reused by other plugins, implement it in `toybox` instead of `xcope`.
 - Do not modify `toybox` from this workspace under any circumstance.
 - When a task requires reusable framework work, write a clear implementation request for toybox developers and hand it off to the user.
