@@ -40,6 +40,7 @@ pub struct ScopeCaptureBuffer {
     last_channel_count: AtomicUsize,
     transport_anchor_sample: AtomicU64,
     transport_anchor_beats_bits: AtomicU64,
+    transport_anchor_epoch: AtomicU64,
 }
 
 impl ScopeCaptureBuffer {
@@ -55,6 +56,7 @@ impl ScopeCaptureBuffer {
             last_channel_count: AtomicUsize::new(0),
             transport_anchor_sample: AtomicU64::new(0),
             transport_anchor_beats_bits: AtomicU64::new(NONE_BEATS_SENTINEL),
+            transport_anchor_epoch: AtomicU64::new(0),
         }
     }
 
@@ -175,6 +177,7 @@ impl ScopeCaptureBuffer {
     /// beats captured from the process context.
     #[cfg(any(feature = "vst3", test))]
     pub(crate) fn set_transport_anchor(&self, song_pos_beats: Option<f64>) {
+        self.transport_anchor_epoch.fetch_add(1, Ordering::AcqRel);
         let sample = self.total_written.load(Ordering::Acquire);
         self.transport_anchor_sample
             .store(sample, Ordering::Release);
@@ -184,18 +187,32 @@ impl ScopeCaptureBuffer {
             .unwrap_or(NONE_BEATS_SENTINEL);
         self.transport_anchor_beats_bits
             .store(beats_bits, Ordering::Release);
+        self.transport_anchor_epoch.fetch_add(1, Ordering::Release);
     }
 
     /// Return the latest transport anchor as `(sample_index, song_pos_beats)`.
     pub(crate) fn transport_anchor(&self) -> Option<(u64, f64)> {
-        let beats_bits = self.transport_anchor_beats_bits.load(Ordering::Acquire);
-        if beats_bits == NONE_BEATS_SENTINEL {
-            return None;
+        for _ in 0..8 {
+            let start_epoch = self.transport_anchor_epoch.load(Ordering::Acquire);
+            if start_epoch & 1 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+
+            let sample = self.transport_anchor_sample.load(Ordering::Acquire);
+            let beats_bits = self.transport_anchor_beats_bits.load(Ordering::Acquire);
+            let end_epoch = self.transport_anchor_epoch.load(Ordering::Acquire);
+
+            if start_epoch != end_epoch || end_epoch & 1 == 1 {
+                std::hint::spin_loop();
+                continue;
+            }
+            if beats_bits == NONE_BEATS_SENTINEL {
+                return None;
+            }
+            return Some((sample, f64::from_bits(beats_bits)));
         }
-        Some((
-            self.transport_anchor_sample.load(Ordering::Acquire),
-            f64::from_bits(beats_bits),
-        ))
+        None
     }
 
     fn storage_index(&self, frame_index: usize, channel_index: usize) -> usize {
@@ -270,5 +287,15 @@ mod tests {
         let anchor = buffer.transport_anchor().expect("anchor should exist");
         assert_eq!(anchor.0, 4);
         assert!((anchor.1 - 12.5).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn transport_anchor_none_clears_anchor_state() {
+        let buffer = ScopeCaptureBuffer::new(8);
+        let ch0 = [0.0, 1.0, 2.0, 3.0];
+        buffer.write_block(&[&ch0], 4);
+        buffer.set_transport_anchor(None);
+
+        assert!(buffer.transport_anchor().is_none());
     }
 }

@@ -44,7 +44,14 @@ fn resolve_window_end_sample(
     let tempo = transport.tempo_bpm.max(1.0) as f64;
     let samples_per_beat = (sample_rate_hz.max(1.0) as f64 * 60.0) / tempo;
     let delta_beats = anchor_beats - window.end_beat;
-    let resolved = anchor_sample as f64 - (delta_beats * samples_per_beat);
+    let delta_samples = delta_beats * samples_per_beat;
+    // Ignore sub-sample transport deltas so UI polling jitter does not force
+    // a one-sample window jump in tempo-locked mode.
+    let resolved = if delta_samples.abs() < 1.0 {
+        anchor_sample as f64
+    } else {
+        anchor_sample as f64 - delta_samples
+    };
     if !resolved.is_finite() {
         return fallback_end;
     }

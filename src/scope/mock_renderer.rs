@@ -7,7 +7,7 @@ use toybox::gui::waveform::{
 use toybox::gui::{declarative::SurfaceCommand, Color};
 
 use crate::constants::MAX_VISUAL_CHANNELS;
-use crate::params::{DisplayMode, XcopeUiState};
+use crate::params::{DisplayMode, ScopeMode, XcopeUiState};
 use crate::scope::ScopeFrame;
 use crate::transport::{resolve_tempo_locked_window, subdivisions_for_grid, TransportSnapshot};
 
@@ -33,7 +33,7 @@ pub fn build_scope_surface_commands(
 
     let mut config = WaveformViewConfig::new(&channel_styles[..channel_count]);
     config.display_mode = display_mode;
-    config.sampling_mode = sampling_mode_for_frame(frame.sample_count(), width);
+    config.sampling_mode = sampling_mode_for_frame(ui_state, frame.sample_count(), width);
     config.zoom_y = ui_state.zoom_y;
     config.grid_mode = grid_mode;
     config.horizontal_grid_lines = 8;
@@ -50,9 +50,19 @@ pub fn build_scope_surface_commands(
 }
 
 /// Select one renderer sampling mode from the current sample-to-pixel density.
-fn sampling_mode_for_frame(sample_count: usize, width: u32) -> WaveformSamplingMode {
+fn sampling_mode_for_frame(
+    ui_state: &XcopeUiState,
+    sample_count: usize,
+    width: u32,
+) -> WaveformSamplingMode {
+    // Tempo-locked rendering must be deterministic across frame updates.
+    // Keep one mode in lock view to avoid visual churn near density thresholds.
+    if ui_state.mode == ScopeMode::TempoLocked {
+        return WaveformSamplingMode::EnvelopeMinMax;
+    }
+
     let columns = width.max(1) as usize;
-    if sample_count > columns {
+    if sample_count > columns.saturating_mul(2) {
         WaveformSamplingMode::EnvelopeMinMax
     } else {
         WaveformSamplingMode::Linear
@@ -169,7 +179,7 @@ mod tests {
     #[test]
     fn sampling_mode_uses_linear_when_density_is_low() {
         assert_eq!(
-            sampling_mode_for_frame(128, 256),
+            sampling_mode_for_frame(&XcopeUiState::default(), 128, 256),
             WaveformSamplingMode::Linear
         );
     }
@@ -177,7 +187,7 @@ mod tests {
     #[test]
     fn sampling_mode_uses_envelope_when_density_is_high() {
         assert_eq!(
-            sampling_mode_for_frame(513, 256),
+            sampling_mode_for_frame(&XcopeUiState::default(), 513, 256),
             WaveformSamplingMode::EnvelopeMinMax
         );
     }
@@ -185,7 +195,19 @@ mod tests {
     #[test]
     fn sampling_mode_handles_zero_width() {
         assert_eq!(
-            sampling_mode_for_frame(2, 0),
+            sampling_mode_for_frame(&XcopeUiState::default(), 2, 0),
+            WaveformSamplingMode::Linear
+        );
+    }
+
+    #[test]
+    fn tempo_locked_sampling_is_always_envelope() {
+        let state = XcopeUiState {
+            mode: crate::params::ScopeMode::TempoLocked,
+            ..XcopeUiState::default()
+        };
+        assert_eq!(
+            sampling_mode_for_frame(&state, 2, 1024),
             WaveformSamplingMode::EnvelopeMinMax
         );
     }
