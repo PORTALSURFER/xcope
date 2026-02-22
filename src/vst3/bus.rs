@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
-use toybox::vst3::prelude::Steinberg::*;
+use toybox::vst3::prelude::*;
 
 use super::INPUT_SOURCE_BUS_COUNT;
 

@@ -3,6 +3,7 @@
 #![allow(clippy::missing_docs_in_private_items)]
 
 use toybox::vst3::prelude::Steinberg::*;
+use toybox::vst3::prelude::*;
 
 use crate::constants::MAX_VISUAL_CHANNELS;
 

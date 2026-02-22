@@ -3,7 +3,7 @@
 use std::ptr;
 use std::slice;
 
-use toybox::vst3::prelude::Steinberg::*;
+use toybox::vst3::prelude::*;
 
 /// Borrow all input buses from process data when present.
 pub(super) unsafe fn process_input_buses(data: &ProcessData) -> Option<&[AudioBusBuffers]> {
