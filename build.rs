@@ -50,10 +50,18 @@ fn main() {
     }
 
     let artifact = select_artifact_for_invocation(&config);
+    let package_name = env::var("CARGO_PKG_NAME").unwrap_or_else(|_| "xcope".into());
     let version = env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "0.1.0".into());
     let profile = env::var("PROFILE").unwrap_or_else(|_| "debug".into());
     let cargo_target_dir = cargo_target_dir(&manifest_dir);
-    let output_path = output_path_for(&artifact, &version, &profile, &cargo_target_dir, &config);
+    let output_path = output_path_for(
+        &artifact,
+        &package_name,
+        &version,
+        &profile,
+        &cargo_target_dir,
+        &config,
+    );
 
     create_parent(&output_path);
     println!(
@@ -210,6 +218,7 @@ fn select_artifact_for_invocation(config: &BuildConfig) -> ArtifactKind {
 
 fn output_path_for(
     artifact: &ArtifactKind,
+    package_name: &str,
     version: &str,
     profile: &str,
     cargo_target_dir: &Path,
@@ -222,15 +231,8 @@ fn output_path_for(
     };
 
     match artifact {
-        ArtifactKind::Clap => output_root.join(format!("xcope-v{version}.clap")),
-        ArtifactKind::Vst3 => {
-            let bundle_name = format!("xcope-v{version}.vst3");
-            output_root
-                .join(&bundle_name)
-                .join("Contents")
-                .join("x86_64-win")
-                .join(&bundle_name)
-        }
+        ArtifactKind::Clap => output_root.join(format!("{package_name}-v{version}.clap")),
+        ArtifactKind::Vst3 => output_root.join(format!("{package_name}-v{version}-win.vst3")),
     }
 }
 
