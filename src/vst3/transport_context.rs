@@ -84,39 +84,65 @@ pub(super) fn resolve_end_of_block_anchor_beats(
     previous_anchor: Option<(u64, f64)>,
     anchor_sample: u64,
 ) -> Option<f64> {
+    let samples_per_beat = samples_per_beat(sample_rate_hz, tempo_bpm)?;
+    let extrapolated = extrapolate_anchor_beats(previous_anchor, anchor_sample, samples_per_beat);
+
     let ctx = unsafe { process_context.as_ref() }?;
     let flags = ctx.state;
     let pos_valid = (flags
         & vst3_process_state_flag(ProcessContext_::StatesAndFlags_::kProjectTimeMusicValid))
         != 0;
     if !pos_valid || !ctx.projectTimeMusic.is_finite() {
-        return previous_anchor.map(|(_, beats)| beats);
-    }
-
-    let tempo = tempo_bpm.max(1.0) as f64;
-    let samples_per_beat = (sample_rate_hz.max(1.0) as f64 * 60.0) / tempo;
-    if !samples_per_beat.is_finite() || samples_per_beat <= 0.0 {
-        return Some(ctx.projectTimeMusic);
+        return extrapolated.or_else(|| previous_anchor.map(|(_, beats)| beats));
     }
 
     let block_beats = (num_samples.max(0) as f64) / samples_per_beat;
+    let default_host_end = host_end_of_block_default(ctx.projectTimeMusic, block_beats);
+    let Some(expected) = extrapolated else {
+        return Some(default_host_end);
+    };
     let candidate_direct = ctx.projectTimeMusic;
     let candidate_projected = ctx.projectTimeMusic + block_beats;
-
-    if let Some((previous_sample, previous_beats)) = previous_anchor {
-        let delta_samples = anchor_sample.saturating_sub(previous_sample) as f64;
-        let expected = previous_beats + (delta_samples / samples_per_beat);
-        let direct_error = (candidate_direct - expected).abs();
-        let projected_error = (candidate_projected - expected).abs();
-        if direct_error <= projected_error {
-            Some(candidate_direct)
-        } else {
-            Some(candidate_projected)
-        }
+    let direct_error = (candidate_direct - expected).abs();
+    let projected_error = (candidate_projected - expected).abs();
+    let candidate = if direct_error <= projected_error {
+        candidate_direct
     } else {
-        // Default to the VST3 reference-point assumption (block start).
-        Some(candidate_projected)
+        candidate_projected
+    };
+    let continuity_threshold = (block_beats.abs() * 2.0).max(1.0e-4);
+    if (candidate - expected).abs() <= continuity_threshold {
+        Some(candidate)
+    } else {
+        // Host timeline likely jumped (seek/loop). Re-anchor to host reference.
+        Some(default_host_end)
     }
+}
+
+fn samples_per_beat(sample_rate_hz: f32, tempo_bpm: f32) -> Option<f64> {
+    let tempo = tempo_bpm.max(1.0) as f64;
+    let samples_per_beat = (sample_rate_hz.max(1.0) as f64 * 60.0) / tempo;
+    if !samples_per_beat.is_finite() || samples_per_beat <= 0.0 {
+        None
+    } else {
+        Some(samples_per_beat)
+    }
+}
+
+fn extrapolate_anchor_beats(
+    previous_anchor: Option<(u64, f64)>,
+    anchor_sample: u64,
+    samples_per_beat: f64,
+) -> Option<f64> {
+    let (previous_sample, previous_beats) = previous_anchor?;
+    let delta_samples = anchor_sample.saturating_sub(previous_sample) as f64;
+    Some(previous_beats + (delta_samples / samples_per_beat))
+}
+
+fn host_end_of_block_default(project_time_music: f64, block_beats: f64) -> f64 {
+    // Keep VST3 start-of-block projection as the robust default when we cannot
+    // disambiguate host reference conventions yet.
+    project_time_music + block_beats
 }
 
 #[cfg(test)]
@@ -151,12 +177,12 @@ mod tests {
     }
 
     #[test]
-    fn anchor_beats_falls_back_to_previous_when_position_invalid() {
+    fn anchor_beats_extrapolates_from_previous_when_position_invalid() {
         let mut ctx = context_with_music(0.0, false);
         let beats =
             resolve_end_of_block_anchor_beats(&mut ctx, 48, 48.0, 60.0, Some((100, 20.0)), 148)
-                .expect("anchor beats should reuse previous");
-        assert!((beats - 20.0).abs() < 1.0e-9);
+                .expect("anchor beats should extrapolate from previous");
+        assert!((beats - 21.0).abs() < 1.0e-9);
     }
 
     #[test]
@@ -257,6 +283,10 @@ mod tests {
                 anchor_sample,
             )
             .expect("fallback to previous anchor should resolve");
+            assert!(
+                (resolved - expected_end).abs() < 1.0e-4,
+                "expected extrapolated {expected_end}, got {resolved}"
+            );
             previous_anchor = Some((anchor_sample, resolved));
         }
 
@@ -277,6 +307,40 @@ mod tests {
             assert!(
                 (resolved - expected_end).abs() < block_beats * 1.1,
                 "expected relock near {expected_end}, got {resolved}"
+            );
+            previous_anchor = Some((anchor_sample, resolved));
+        }
+    }
+
+    #[test]
+    fn anchor_beats_stays_continuous_when_position_flags_flicker() {
+        let sample_rate_hz = 48_000.0;
+        let tempo_bpm = 120.0;
+        let block_samples = 480;
+        let samples_per_beat = (sample_rate_hz * 60.0) / tempo_bpm;
+        let block_beats = block_samples as f64 / samples_per_beat as f64;
+        let mut previous_anchor: Option<(u64, f64)> = None;
+        let mut anchor_sample = 0u64;
+        let mut expected_end = 0.0f64;
+
+        for index in 0..128 {
+            anchor_sample += block_samples as u64;
+            expected_end += block_beats;
+            let pos_valid = index % 2 == 0;
+            let reported = expected_end - block_beats;
+            let mut ctx = context_with_music(reported, pos_valid);
+            let resolved = resolve_end_of_block_anchor_beats(
+                &mut ctx,
+                block_samples,
+                sample_rate_hz,
+                tempo_bpm,
+                previous_anchor,
+                anchor_sample,
+            )
+            .expect("anchor beats should resolve");
+            assert!(
+                (resolved - expected_end).abs() < 1.0e-4,
+                "block {index}: expected {expected_end}, got {resolved}"
             );
             previous_anchor = Some((anchor_sample, resolved));
         }
