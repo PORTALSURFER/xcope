@@ -2,7 +2,7 @@
 name = "xcope"
 version = "0.1.0"
 edition = "2021"
-authors = ["portalsurfer"]
+authors = ["PORTALSURFER"]
 publish = false
 build = "build.rs"
 
