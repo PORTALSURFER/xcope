@@ -4,9 +4,8 @@ This directory contains project context and execution plans.
 
 ## Start Here
 
-1. `docs/plans/active/todo.md` for the immediate ordered queue.
-2. `docs/plans/index.md` for plan locations.
-3. `docs/PRODUCT_SPEC.md` for product requirements and scope limits.
+1. `docs/plans/index.md` for plan locations.
+2. `docs/PRODUCT_SPEC.md` for product requirements and scope limits.
 
 ## Core Documents
 
